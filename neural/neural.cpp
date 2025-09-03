@@ -9,7 +9,7 @@
 #include <vector>
 #include <Eigen/Dense>
 #include <filesystem>
-
+#include <nlohmann/json.hpp>
 
 struct Layer {
 	Eigen::MatrixXf weights;
@@ -257,7 +257,78 @@ void print(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& pair) {
 
 }
 
+nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
+	nlohmann::json out;
+
+	out["elements"] = vector.size();
+
+	for (int i = 0; i < vector.size(); i++) {
+		out["data"].push_back(vector(i));
+	}
+
+	return out;
+}
+
+nlohmann::json MatrixToJson(const Eigen::MatrixXf& matrix) {
+	nlohmann::json out;
+	out["rows"] = matrix.rows();
+	out["cols"] = matrix.cols();
+
+	for (int i = 0; i < matrix.rows(); i++) {
+		for (int j = 0; j < matrix.cols(); j++) {
+			out["data"].push_back(matrix(i, j));
+		}
+	}
+
+	return out;
+}
+
+Eigen::MatrixXf JsonToMatrix(const nlohmann::json& json) {
+	const int rows = json["rows"];
+	const int cols = json["cols"];
+
+	assert(rows * cols == json["data"].size());
+	assert(json["data"].is_array());
+	assert(json["data"][0].is_number_float()); //assumes non-empty
+
+	Eigen::MatrixXf matrix(rows, cols);
+	for (int i = 0; i < rows; i++) {
+		for (int j = 0; j < cols; j++) {
+			matrix(i, j) = json["data"][i * cols + j];
+		}
+	}
+	return matrix;
+}
+
+Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
+	const int elements = json["elements"];
+
+	assert(json["data"].is_array());
+	assert(json["data"][0].is_number_float()); //again non-empty assertion, deal with it later.
+
+	Eigen::VectorXf vector(elements);
+
+	for (int i = 0; i < elements; i++) {
+		vector(i) = json["data"][i];
+	}
+
+	return vector;
+}
 int main() {
+	Eigen::MatrixXf matrix{ {32,12,0},
+		{4,5,6} ,
+		{1,2,3} };
+	
+	Eigen::MatrixXf identity = JsonToMatrix(MatrixToJson(matrix));
+	std::cout << matrix << std::endl << identity << std::endl;
+	assert(identity == matrix); //inverse of a function composed with function = identity function
+
+	Eigen::VectorXf vec{ { 1,2,3,4564,5,6,7} };
+	Eigen::VectorXf loaded = JsonToVector(VectorToJson(vec));
+	std::cout << vec << std::endl << loaded << std::endl;
+	assert(vec == loaded);
+
+	return 0;
 	const auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 
