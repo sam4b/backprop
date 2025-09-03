@@ -4,6 +4,9 @@
 #include <random>
 #include <format>
 #include <cstdint>
+#include <algorithm>
+#include <sstream>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -11,9 +14,85 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 
+
+nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
+	nlohmann::json out;
+
+	out["elements"] = vector.size();
+
+	for (int i = 0; i < vector.size(); i++) {
+		out["data"].push_back(vector(i));
+	}
+
+	return out;
+}
+
+nlohmann::json MatrixToJson(const Eigen::MatrixXf& matrix) {
+	nlohmann::json out;
+	out["rows"] = matrix.rows();
+	out["cols"] = matrix.cols();
+
+	for (int i = 0; i < matrix.rows(); i++) {
+		for (int j = 0; j < matrix.cols(); j++) {
+			out["data"].push_back(matrix(i, j));
+		}
+	}
+
+	return out;
+}
+
+Eigen::MatrixXf JsonToMatrix(const nlohmann::json& json) {
+	const int rows = json["rows"];
+	const int cols = json["cols"];
+
+	assert(rows * cols == json["data"].size());
+	assert(json["data"].is_array());
+	assert(json["data"][0].is_number_float()); //assumes non-empty
+
+	Eigen::MatrixXf matrix(rows, cols);
+	for (int i = 0; i < rows; i++) {
+		for (int j = 0; j < cols; j++) {
+			matrix(i, j) = json["data"][i * cols + j];
+		}
+	}
+	return matrix;
+}
+
+Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
+	const int elements = json["elements"];
+
+	assert(json["data"].is_array());
+	assert(json["data"][0].is_number_float()); //again non-empty assertion, deal with it later.
+
+	Eigen::VectorXf vector(elements);
+
+	for (int i = 0; i < elements; i++) {
+		vector(i) = json["data"][i];
+	}
+
+	return vector;
+}
+
 struct Layer {
 	Eigen::MatrixXf weights;
 	Eigen::VectorXf bias;
+
+	nlohmann::json tojson() const {
+		nlohmann::json out;
+
+		out["weights"] = MatrixToJson(weights);
+		out["bias"] = VectorToJson(bias);
+
+
+		return out;
+	}
+
+	static Layer fromJson(const nlohmann::json& json) {
+		Layer out;
+		out.weights = JsonToMatrix(json["weights"]);
+		out.bias = JsonToVector(json["bias"]);
+		return out;
+	}
 };
 
 
@@ -39,20 +118,6 @@ const auto sigmoidDerivative = [](const float x) -> float {
 	return sigmoid(x) * (1.0f - sigmoid(x));
 	};
 
-
-
-
-
-
-Eigen::VectorXf FeedForward(Eigen::VectorXf x, const std::vector<Layer>& network) {
-
-	for (const auto& layer : network) {
-		x = layer.weights * x + layer.bias;
-		x = x.unaryExpr(sigmoid);
-	}
-
-	return x;
-}
 
 struct TrainingOptions {
 	int batchSize;
@@ -100,67 +165,6 @@ void backprop(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& data, const std
 using LabelledSet = std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>;
 
 
-
-void SGD(std::vector<Layer>& layers, const LabelledSet& trainingSet, const TrainingOptions options) {
-
-	std::random_device device;
-	std::mt19937 mersenne(device());
-	std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
-
-	for (int batch = 0; batch < options.iterations; batch++) {
-		std::vector<Eigen::VectorXf> updateBias;
-		std::vector<Eigen::MatrixXf> updateWeights;
-
-		for (const auto& layer : layers) {
-			updateBias.emplace_back(Eigen::VectorXf::Zero(layer.bias.size()));
-			updateWeights.emplace_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols()));
-
-		}
-
-		for (int sample = 0; sample < options.batchSize; sample++) {
-			const auto idx = sampler(mersenne);
-
-			std::vector<Eigen::VectorXf> deltaBias(layers.size());
-			std::vector<Eigen::MatrixXf> deltaWeight(layers.size());
-
-			backprop(trainingSet[idx], layers, deltaBias, deltaWeight);
-
-			for (int i = 0; i < updateBias.size(); i++) {
-				updateBias[i] += deltaBias[i];
-				updateWeights[i] += deltaWeight[i];
-			}
-		}
-
-		for (int i = 0; i < layers.size(); i++) {
-			layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
-			layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
-		}
-
-		int correct = 0;
-
-		for (int i = 0; i < options.progressSampleSize; i++) {
-			const int idx = sampler(mersenne);
-
-			const auto yhat = FeedForward(trainingSet[idx].first, layers);
-
-			const auto& y = trainingSet[idx].second;
-
-			Eigen::Index maxYHat, maxY;
-			yhat.maxCoeff(&maxYHat);
-			y.maxCoeff(&maxY);
-
-			if (maxYHat == maxY) {
-				correct++;
-			}
-
-
-		}
-
-		std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", batch + 1 /*offset 0 start*/, options.iterations, correct, options.progressSampleSize, static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
-
-	}
-
-	}
 
 
 uint32_t readBigEndianUint32(std::ifstream& f) {
@@ -257,98 +261,180 @@ void print(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& pair) {
 
 }
 
-nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
-	nlohmann::json out;
 
-	out["elements"] = vector.size();
+class Network {
+public:
+	Network(const std::vector<int>& neurons) {
+		//TBA: Add weight initialization type (enum)?
+		//	   Add custom activation functions (ReLU, etc - also add this to JSON schema).
 
-	for (int i = 0; i < vector.size(); i++) {
-		out["data"].push_back(vector(i));
-	}
+		for (int i = 0; i < neurons.size() - 1; i++) {
+			const int out = neurons[i + 1];
+			const int in = neurons[i];
 
-	return out;
-}
-
-nlohmann::json MatrixToJson(const Eigen::MatrixXf& matrix) {
-	nlohmann::json out;
-	out["rows"] = matrix.rows();
-	out["cols"] = matrix.cols();
-
-	for (int i = 0; i < matrix.rows(); i++) {
-		for (int j = 0; j < matrix.cols(); j++) {
-			out["data"].push_back(matrix(i, j));
+			layers.emplace_back(createLayer(in, out));
 		}
+
 	}
 
-	return out;
-}
+	Network(const std::filesystem::path& path) {
+		std::ifstream in(path);
 
-Eigen::MatrixXf JsonToMatrix(const nlohmann::json& json) {
-	const int rows = json["rows"];
-	const int cols = json["cols"];
+		const nlohmann::json json = nlohmann::json::parse(in);
 
-	assert(rows * cols == json["data"].size());
-	assert(json["data"].is_array());
-	assert(json["data"][0].is_number_float()); //assumes non-empty
-
-	Eigen::MatrixXf matrix(rows, cols);
-	for (int i = 0; i < rows; i++) {
-		for (int j = 0; j < cols; j++) {
-			matrix(i, j) = json["data"][i * cols + j];
-		}
-	}
-	return matrix;
-}
-
-Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
-	const int elements = json["elements"];
-
-	assert(json["data"].is_array());
-	assert(json["data"][0].is_number_float()); //again non-empty assertion, deal with it later.
-
-	Eigen::VectorXf vector(elements);
-
-	for (int i = 0; i < elements; i++) {
-		vector(i) = json["data"][i];
+		fromjson(json);
 	}
 
-	return vector;
-}
-int main() {
-	Eigen::MatrixXf matrix{ {32,12,0},
-		{4,5,6} ,
-		{1,2,3} };
+	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
+		SGD(layers, trainingSet, options);
+	}
 	
-	Eigen::MatrixXf identity = JsonToMatrix(MatrixToJson(matrix));
-	std::cout << matrix << std::endl << identity << std::endl;
-	assert(identity == matrix); //inverse of a function composed with function = identity function
+	void WriteNetworkAsJson(const std::filesystem::path& dest) const {
+		std::ofstream out(dest);
+		assert(out);
 
-	Eigen::VectorXf vec{ { 1,2,3,4564,5,6,7} };
-	Eigen::VectorXf loaded = JsonToVector(VectorToJson(vec));
-	std::cout << vec << std::endl << loaded << std::endl;
-	assert(vec == loaded);
+		const nlohmann::json json = tojson();
 
-	return 0;
+		out << json;
+	}
+
+	Eigen::VectorXf predict(Eigen::VectorXf x) const {
+		for (const auto& layer : layers) {
+			x = layer.weights * x + layer.bias;
+			x = x.unaryExpr(sigmoid);
+		}
+
+		return x;
+	}
+private:
+	void SGD(std::vector<Layer>& layers, const LabelledSet& trainingSet, const TrainingOptions options) {
+
+		std::random_device device;
+		std::mt19937 mersenne(device());
+		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
+
+		for (int batch = 0; batch < options.iterations; batch++) {
+			std::vector<Eigen::VectorXf> updateBias;
+			std::vector<Eigen::MatrixXf> updateWeights;
+
+			for (const auto& layer : layers) {
+				updateBias.emplace_back(Eigen::VectorXf::Zero(layer.bias.size()));
+				updateWeights.emplace_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols()));
+
+			}
+
+			for (int sample = 0; sample < options.batchSize; sample++) {
+				const auto idx = sampler(mersenne);
+
+				std::vector<Eigen::VectorXf> deltaBias(layers.size());
+				std::vector<Eigen::MatrixXf> deltaWeight(layers.size());
+
+				backprop(trainingSet[idx], layers, deltaBias, deltaWeight);
+
+				for (int i = 0; i < updateBias.size(); i++) {
+					updateBias[i] += deltaBias[i];
+					updateWeights[i] += deltaWeight[i];
+				}
+			}
+
+			for (int i = 0; i < layers.size(); i++) {
+				layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
+				layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
+			}
+
+			int correct = 0;
+
+			for (int i = 0; i < options.progressSampleSize; i++) {
+				const int idx = sampler(mersenne);
+
+				const auto yhat = predict(trainingSet[idx].first);
+
+				const auto& y = trainingSet[idx].second;
+
+				Eigen::Index maxYHat, maxY;
+				yhat.maxCoeff(&maxYHat);
+				y.maxCoeff(&maxY);
+
+				if (maxYHat == maxY) {
+					correct++;
+				}
+
+
+			}
+
+			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", batch + 1 /*offset 0 start*/, options.iterations, correct, options.progressSampleSize, static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
+
+		}
+
+	}
+
+	void fromjson(const nlohmann::json& json) {
+		for (const auto& layer : json["layers"]) {
+			layers.push_back(Layer::fromJson(layer));
+		}
+	}
+	nlohmann::json tojson() const {
+		nlohmann::json out;
+		
+		for (const auto& layer : layers) {
+			out["layers"].push_back(layer.tojson());
+		}
+
+		return out;
+	}
+
+	std::vector<Layer> layers;
+};
+int main() {
+
 	const auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
+	const std::filesystem::path jsonPath = "C:/Users/Sam/Desktop/mynetwork.json";
 
-	for (int i = 0; i < 10; i++) {
-		print(train[i]);
-	}
-
-	std::vector<Layer> network; //784 neurons in, 10 neurons out (prediction: [0-9].)
-	network.push_back(createLayer(784, 60));
-	network.push_back(createLayer(60, 10));
+	std::cout << "Train or test? ";
+	std::string in;
+	std::cin >> in;
+	std::transform(in.begin(), in.end(), in.begin(),
+		[](unsigned char c) { return std::tolower(c); });
 
 
-	const TrainingOptions options = {
+	if (in == "train") {
+		for (int i = 0; i < 10; i++) {
+			print(train[i]);
+		}
+
+		const TrainingOptions options = {
 		.batchSize = 100,
 		.learningRate = 3.0f,
 		.iterations = 200,
 		.progressSampleSize = 50
-	};
+		};
 
-	SGD(network, train, options);
+		Network network(std::vector<int>{ 784, 60, 10 }); //784 neurons in, 10 neurons out (prediction: [0-9].)
+		network.train(train, options);
+
+		network.WriteNetworkAsJson(jsonPath);
+	}
+	else if (in == "test") {
+		Network network(jsonPath);
+		while (true) {
+			std::cout << std::format("\nEnter number in range [{}, {}]: ", 0, test.size() - 1);
+			int idx;
+			std::cin >> idx;
+			assert(idx >= 0 && idx < test.size() - 1);
+			print(test[idx]);
+			const auto pred = network.predict(test[idx].first);
+			Eigen::Index maxidx;
+			pred.maxCoeff(&maxidx);
+			std::cout << std::format("Predicted {}.", (int)maxidx);
+		}
+		
+	}
+	else {
+		return -1;
+	}
+
+
 
 	return 0;
 }
