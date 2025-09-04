@@ -175,7 +175,7 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 };
 
 //copy xs as we need to reuse a matrix of its size anyway!
-void matrix_based_backprop(Eigen::VectorXf xs, const Eigen::VectorXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::MatrixXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
+void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::MatrixXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
 	std::vector<Eigen::MatrixXf> zs; //weighted sums
 	std::vector<Eigen::MatrixXf> as; //activations
 	//Reserve ! (re-use matrices ?)
@@ -423,6 +423,46 @@ public:
 		return x;
 	}
 private:
+	void MatrixSGD(const LabelledSet& trainingSet, const TrainingOptions options) {
+		std::mt19937 mersenne(this->rand());
+		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
+
+		for (int batch = 0; batch < options.iterations; batch++) {
+			std::vector<Eigen::MatrixXf> updateBias;
+			std::vector<Eigen::MatrixXf> updateWeights;
+
+			for (const auto& layer : layers) {
+				updateBias.push_back(Eigen::MatrixXf::Zero(layer.bias.size(), options.batchSize));
+				//add weights
+			}
+
+			const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
+			const int y_rows = trainingSet[0].second.size();
+
+			Eigen::MatrixXf xs = Eigen::MatrixXf::Zero(x_rows, options.batchSize); //For MNIST, should be 784 x N matrix.
+			Eigen::MatrixXf ys = Eigen::MatrixXf::Zero(y_rows, options.batchSize); //For MNIST, should be 10 X N matrix.
+
+			//Stick them all together
+
+			for (int i = 0; i < options.batchSize; i++) {
+				const auto idx = sampler(mersenne);
+
+				const auto& [x, y] = trainingSet[idx];
+
+				for (int j = 0; j < x_rows; j++) {
+					xs(j, i) = x(j);
+				}
+
+				for (int j = 0; j < y_rows; j++) {
+					ys(j, i) = y(j);
+				}
+			}
+
+			matrix_based_backprop(xs, ys, layers, updateBias, updateWeights);
+
+		}
+	}
+
 	void SGD(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
 		
 		std::mt19937 mersenne(this->rand());
