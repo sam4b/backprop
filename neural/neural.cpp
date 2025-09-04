@@ -12,8 +12,9 @@
 #include <vector>
 #include <Eigen/Dense>
 #include <filesystem>
+#include <magic_enum/magic_enum.hpp>
 #include <nlohmann/json.hpp>
-
+#include <functional>
 
 nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
 	nlohmann::json out;
@@ -73,16 +74,23 @@ Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
 	return vector;
 }
 
+enum class ActivationFunctionType {
+	Sigmoid,
+	Tanh
+};
+
+
 struct Layer {
 	Eigen::MatrixXf weights;
 	Eigen::VectorXf bias;
+	ActivationFunctionType type;
 
 	nlohmann::json tojson() const {
 		nlohmann::json out;
 
 		out["weights"] = MatrixToJson(weights);
 		out["bias"] = VectorToJson(bias);
-
+		out["activation"] = magic_enum::enum_name(type);
 
 		return out;
 	}
@@ -91,39 +99,63 @@ struct Layer {
 		Layer out;
 		out.weights = JsonToMatrix(json["weights"]);
 		out.bias = JsonToVector(json["bias"]);
+		if (json["activation"] == "Sigmoid") {
+			out.type = ActivationFunctionType::Sigmoid;
+		}
+		else if (json["activation"] == "Tanh") {
+			out.type = ActivationFunctionType::Tanh;
+		}
+		else {
+			assert(false);
+		}
 		return out;
 	}
 };
 
-
 //Xavier weight initialisation cuz sigmoid
-Layer createLayer(int neuronsIn, int neuronsOut) {
+Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type) {
 	std::random_device rd;
 	std::mt19937 gen(rd());
-	float scale = std::sqrt(1.0f / neuronsIn);
-	std::normal_distribution<float> dist(0.0f, scale);
 
-	Eigen::MatrixXf weights = Eigen::MatrixXf::NullaryExpr(
-		neuronsOut, neuronsIn, [&](int, int) { return dist(gen); });
+	Eigen::MatrixXf weights;
 	Eigen::VectorXf bias = Eigen::VectorXf::Zero(neuronsOut);
-	return Layer{ weights, bias };
+
+	if (type == ActivationFunctionType::Sigmoid || type == ActivationFunctionType::Tanh) {
+		//Xavier
+
+		float scale = std::sqrt(2.0f / (neuronsIn + neuronsOut));
+		std::normal_distribution<float> dist(0.0f, scale);
+
+		weights = Eigen::MatrixXf::NullaryExpr(
+			neuronsOut, neuronsIn, [&](int, int) { return dist(gen); });
+	}
+	else {
+		assert(false);
+	}
+	return Layer{ weights, bias, type };
 }
-
-
-const auto sigmoid = [](const float x) -> float {
-	return 1.0f / (1.0f + exp(-1.0f * x));
-	};
-
-const auto sigmoidDerivative = [](const float x) -> float {
-	return sigmoid(x) * (1.0f - sigmoid(x));
-	};
-
 
 struct TrainingOptions {
 	int batchSize;
 	float learningRate;
 	int iterations;
 	int progressSampleSize;
+};
+
+const std::unordered_map<ActivationFunctionType, std::function<float(float)>> activationFunctions = {
+	{ActivationFunctionType::Sigmoid, [](const float x) -> float { return  1.0f / (1.0f + exp(-1.0f * x));}},
+	{ActivationFunctionType::Tanh, [](const float x) -> float { return sinh(x) / cosh(x);}}
+};
+
+const std::unordered_map<ActivationFunctionType, std::function<float(float)>> derivativeMap = {
+	{ActivationFunctionType::Sigmoid, [](const float x) -> float {
+	const float sigmoid = 1.0f / (1.0f + exp(-1.0f * x));
+	return sigmoid * (1.0f - sigmoid);
+	}},
+	{ActivationFunctionType::Tanh, [](const float x) -> float {
+		return (1.0f / cosh(x)) * (1.0f / cosh(x));
+	}}
+
 };
 
 
@@ -137,13 +169,15 @@ void backprop(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& data, const std
 	for (const auto& layer : layers) {
 		weightedSums.push_back(layer.weights * x + layer.bias);
 		activations.push_back(weightedSums.back());
-		activations.back() = activations.back().unaryExpr(sigmoid);
+		activations.back() = activations.back().unaryExpr(activationFunctions.at(layer.type));
 		x = activations.back(); 
 	} 
 	const auto& label = data.second; //y
 	const auto& predicted_label = x; //y hat 
 
-	Eigen::VectorXf delta = (predicted_label - label).cwiseProduct(weightedSums.back().unaryExpr(sigmoidDerivative));
+
+
+	Eigen::VectorXf delta = (predicted_label - label).cwiseProduct(weightedSums.back().unaryExpr(derivativeMap.at(layers.back().type)));
 
     assert(weightErrors.size() == biasErrors.size());
 	assert(weightedSums.size() == biasErrors.size()); 
@@ -153,7 +187,7 @@ void backprop(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& data, const std
 	weightErrors[weightErrors.size() - 1] = delta * activations[activations.size() - 2].transpose(); 
 
 	for (int i = biasErrors.size() - 2; i >= 0; i--) {
-		const Eigen::VectorXf activationDerivative = weightedSums[i].unaryExpr(sigmoidDerivative);
+		const Eigen::VectorXf activationDerivative = weightedSums[i].unaryExpr(derivativeMap.at(layers[i].type));
 		assert(i + 1 < layers.size()); //loop invariant
 		delta = layers[i + 1].weights.transpose() * delta;
 		delta = delta.cwiseProduct(activationDerivative);
@@ -264,15 +298,15 @@ void print(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& pair) {
 
 class Network {
 public:
-	Network(const std::vector<int>& neurons) {
+	Network(const std::vector<std::pair<int, ActivationFunctionType>>& neurons) {
 		//TBA: Add weight initialization type (enum)?
 		//	   Add custom activation functions (ReLU, etc - also add this to JSON schema).
 
 		for (int i = 0; i < neurons.size() - 1; i++) {
-			const int out = neurons[i + 1];
-			const int in = neurons[i];
+			const int out = neurons[i + 1].first;
+			const int in = neurons[i].first;
 
-			layers.emplace_back(createLayer(in, out));
+			layers.emplace_back(createLayer(in, out, neurons[i].second));
 		}
 
 	}
@@ -286,7 +320,11 @@ public:
 	}
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
-		SGD(layers, trainingSet, options);
+		SGD(trainingSet, options, []() {});
+	}
+
+	void train(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
+		SGD(trainingSet, options, progressUpdater);
 	}
 	
 	void WriteNetworkAsJson(const std::filesystem::path& dest) const {
@@ -301,13 +339,13 @@ public:
 	Eigen::VectorXf predict(Eigen::VectorXf x) const {
 		for (const auto& layer : layers) {
 			x = layer.weights * x + layer.bias;
-			x = x.unaryExpr(sigmoid);
+			x = x.unaryExpr(activationFunctions.at(layer.type));
 		}
 
 		return x;
 	}
 private:
-	void SGD(std::vector<Layer>& layers, const LabelledSet& trainingSet, const TrainingOptions options) {
+	void SGD(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
 
 		std::random_device device;
 		std::mt19937 mersenne(device());
@@ -342,6 +380,8 @@ private:
 				layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
 			}
 
+			progressUpdater();
+			/*
 			int correct = 0;
 
 			for (int i = 0; i < options.progressSampleSize; i++) {
@@ -362,8 +402,8 @@ private:
 
 			}
 
-			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", batch + 1 /*offset 0 start*/, options.iterations, correct, options.progressSampleSize, static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
-
+			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", batch + 1 /*offset 0 start*///, options.iterations, correct, options.progressSampleSize, static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
+		//	*/
 		}
 
 	}
@@ -386,6 +426,76 @@ private:
 	std::vector<Layer> layers;
 };
 int main() {
+
+	std::vector<float> sample;
+	std::string csv;
+	for (float x = -3.0f; x <= 3.0f; x += 0.25f) {
+		sample.push_back(x);
+		csv += "x=" + std::to_string(x) + ",";
+	}
+
+	csv.pop_back();
+
+	csv += "\n";
+
+	for (float& x : sample) {
+		x /= 3;
+	}
+
+	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 60, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }});
+
+	LabelledSet observations;
+
+	const auto f = [](const float x) -> float { return x * x; };
+
+	for (float x = -3.0f; x <= 3.0f; x += 0.0005) {
+		const float unmapped_y = f(x);
+		const float mapped_y = (unmapped_y / 4.5f) - 1.0f;
+		const float mapped_x = x / 3.0f;
+
+		Eigen::VectorXf x_vec(1);
+		x_vec(0) = mapped_x;
+
+		Eigen::VectorXf y_vec(1);
+		y_vec(0) = mapped_y;
+
+		observations.push_back({ x_vec, y_vec });
+
+	}
+
+
+	const auto evaluator = [&]() -> void {
+		for (const float x : sample) {
+			const float mapped_x = x / 3.0f;
+			Eigen::VectorXf vec(1);
+			vec(0) = mapped_x;
+			const Eigen::VectorXf pred = network.predict(vec);
+			const float unmapped_y = pred(0);
+			const float mapped_y = (unmapped_y + 1.0f) * 4.5f;
+
+			csv += std::to_string(mapped_y) + ",";
+
+		}
+		csv.pop_back();
+		csv += "\n";
+		};
+
+	network.train(observations, TrainingOptions
+		{
+			.batchSize = 50,
+			.learningRate = 0.01f,
+			.iterations = 100,
+			.progressSampleSize = 0
+		}, evaluator);
+
+	network.WriteNetworkAsJson("C:/Users/Sam/Desktop/quadratic.json");
+
+
+	std::cout << csv;
+
+	return 0;
+
+/*
 
 	const auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
@@ -410,7 +520,7 @@ int main() {
 		.progressSampleSize = 50
 		};
 
-		Network network(std::vector<int>{ 784, 60, 10 }); //784 neurons in, 10 neurons out (prediction: [0-9].)
+		Network network(std::vector<std::pair<int, ActivationFunctionType>>{ {784, ActivationFunctionType::Sigmoid}, { 60, ActivationFunctionType::Sigmoid }, { 10, ActivationFunctionType::Sigmoid } }); //784 neurons in, 10 neurons out (prediction: [0-9].)
 		network.train(train, options);
 
 		network.WriteNetworkAsJson(jsonPath);
@@ -421,21 +531,21 @@ int main() {
 			std::cout << std::format("\nEnter number in range [{}, {}]: ", 0, test.size() - 1);
 			int idx;
 			std::cin >> idx;
-			assert(idx >= 0 && idx < test.size() - 1);
+			assert(idx >= 0 && idx < test.size() );
 			print(test[idx]);
 			const auto pred = network.predict(test[idx].first);
 			Eigen::Index maxidx;
 			pred.maxCoeff(&maxidx);
 			std::cout << std::format("Predicted {}.", (int)maxidx);
 		}
-		
+
 	}
 	else {
 		return -1;
 	}
 
 
-
+*/
 	return 0;
 }
 
