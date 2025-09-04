@@ -402,7 +402,7 @@ public:
 		fromjson(json);
 	}
 
-#define MatrixSGDEnabled 1
+#define MatrixSGD 1
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
 		const auto batchUpdate = [&]() -> void {
@@ -418,7 +418,7 @@ public:
 	}
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
-#ifdef MatrixSGDEnabled
+#ifdef MatrixSGD
 		this->MatrixSGD(trainingSet, options, progressUpdater);
 #else
 		SGD(trainingSet, options, progressUpdater);
