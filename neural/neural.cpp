@@ -464,7 +464,7 @@ int main() {
 
 	std::vector<float> sample;
 	std::string csv;
-	for (float x = -1.0f; x <= 1.0f; x += 0.01f) {
+	for (float x = 0.0f; x <= 3.14159f * 2.0f; x += 0.01f) {
 		sample.push_back(x);
 		csv += "x=" + std::to_string(x) + ",";
 	}
@@ -474,17 +474,26 @@ int main() {
 	csv += "\n";
 
 
-	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 15, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }}, 55);
+	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::LeakyReLU}, { 20, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }}, 55);
 
 	LabelledSet observations;
 
-	const auto f = [](const float x) -> float { return x * x; };
+	const auto f = [](const float x) -> float { return sin(x); };
 
-	for (float x = -1.0f; x <= 1.0f; x += 0.000005) {
+	const float delta = 0.000005;
+	const int amount = (int)(2.0f / delta);
+	observations.reserve(amount);
+
+	const auto norm = [](const float x) -> float { //Map from [0, 2pi] to [-1, 1]
+		return   2 * (x - 0.0f) / (2.0f * 3.14159f - 0.0f) - 1.0f;
+		};
+		
+
+	for (float x = 0.0f; x <= 3.14159f * 2.0f; x += delta) {
 		
 
 		Eigen::VectorXf x_vec(1);
-		x_vec(0) = x;
+		x_vec(0) = norm(x);
 
 		Eigen::VectorXf y_vec(1);
 		y_vec(0) = f(x);
@@ -498,13 +507,13 @@ int main() {
 		float error = 0.0f;
 		for (const float x : sample) {
 			Eigen::VectorXf vec(1);
-			vec(0) = x;
+			vec(0) = norm(x);
 			const Eigen::VectorXf pred = network.predict(vec);
 			const float y = pred(0);
 
 			csv += std::to_string(y) + ",";
 
-			error += ((x * x) - y) * ((x * x) - y);
+			error += ((sin(x)) - y) * ((sin(x)) - y);
 
 		}
 		error /= (float)sample.size();
@@ -515,9 +524,9 @@ int main() {
 
 	network.train(observations, TrainingOptions
 		{
-			.batchSize = 100,
-			.learningRate = 0.3f,
-			.iterations = 1500,
+			.batchSize = 500,
+			.learningRate = 0.75f,
+			.iterations = 500,
 			.progressSampleSize = 0
 		}, evaluator);
 
