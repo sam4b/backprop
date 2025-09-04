@@ -175,7 +175,7 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 };
 
 //copy xs as we need to reuse a matrix of its size anyway!
-void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::MatrixXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
+void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
 	std::vector<Eigen::MatrixXf> zs; //weighted sums
 	std::vector<Eigen::MatrixXf> as; //activations
 	//Reserve ! (re-use matrices ?)
@@ -190,7 +190,7 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 	for (const auto& layer : layers) {
 		Eigen::MatrixXf biases = layer.bias.replicate(1, n); //store this somewhere else per layer, repeated memory allocs + computation!
 
-		Eigen::MatrixXf z = layer.weights * xs + layer.bias;
+		Eigen::MatrixXf z = layer.weights * xs + biases;
 		Eigen::MatrixXf a = z.unaryExpr(activationFunctions.at(layer.type));
 
 		zs.push_back(z);
@@ -206,7 +206,7 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 
 	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(zs_derivative);
 
-	biasErrors.back() = delta;
+	biasErrors.back() = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bia sfor this layer
 	weightErrors.back() = delta * as[as.size() - 2].transpose();
 
 	//Normal backprop recurrence for lth layer
@@ -215,10 +215,16 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 		const Eigen::MatrixXf zs_derivative = zs[layer].unaryExpr(derivativeMap.at(layers[layer].type));
 		const Eigen::MatrixXf weight_error_product = layers[layer + 1].weights.transpose() * delta;
 
-		delta = zs_derivative.cwiseProduct(weight_error_product);
+		delta = zs_derivative.cwiseProduct(weight_error_product); 
 
-		biasErrors[layer] = delta;
+		biasErrors[layer] = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bia sfor this layer
+
+
+		//Collapse weightrows x (weightcols * batchsize) mat -> weightrows x weightcols mat by product of transpose.
+
 		weightErrors[layer] = delta * as[layer].transpose();
+
+
 	}
 
 }
@@ -398,11 +404,13 @@ public:
 
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
-		SGD(trainingSet, options, []() {});
+		this->MatrixSGD(trainingSet, options);
+	//	SGD(trainingSet, options, []() {});
 	}
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
-		SGD(trainingSet, options, progressUpdater);
+		this->MatrixSGD(trainingSet, options);
+		//SGD(trainingSet, options, progressUpdater);
 	}
 	
 	void WriteNetworkAsJson(const std::filesystem::path& dest) const {
@@ -428,12 +436,13 @@ private:
 		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
 
 		for (int batch = 0; batch < options.iterations; batch++) {
-			std::vector<Eigen::MatrixXf> updateBias;
+			std::vector<Eigen::VectorXf> updateBias;
 			std::vector<Eigen::MatrixXf> updateWeights;
 
 			for (const auto& layer : layers) {
-				updateBias.push_back(Eigen::MatrixXf::Zero(layer.bias.size(), options.batchSize));
+				updateBias.push_back(Eigen::VectorXf::Zero(layer.bias.size()));
 				//add weights
+				updateWeights.push_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols() * options.batchSize)); //I think this is right?
 			}
 
 			const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
@@ -460,6 +469,39 @@ private:
 
 			matrix_based_backprop(xs, ys, layers, updateBias, updateWeights);
 
+			assert(layers.size() == updateBias.size());
+			assert(updateWeights.size() == updateBias.size());
+
+			for (int i = 0; i < layers.size(); i++) {
+				layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
+				layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
+			}
+
+			
+			int correct = 0;
+
+			for (int i = 0; i < options.progressSampleSize; i++) {
+				const int idx = sampler(mersenne);
+
+				const auto yhat = predict(trainingSet[idx].first);
+
+				const auto& y = trainingSet[idx].second;
+
+				Eigen::Index maxYHat, maxY;
+				yhat.maxCoeff(&maxYHat);
+				y.maxCoeff(&maxY);
+
+				if (maxYHat == maxY) {
+					correct++;
+				}
+
+
+			}
+
+			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", 
+				batch + 1 /*offset 0 start*/, options.iterations,
+				correct, options.progressSampleSize,
+				static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
 		}
 	}
 
@@ -498,29 +540,6 @@ private:
 			}
 
 			progressUpdater();
-			/*
-			int correct = 0;
-
-			for (int i = 0; i < options.progressSampleSize; i++) {
-				const int idx = sampler(mersenne);
-
-				const auto yhat = predict(trainingSet[idx].first);
-
-				const auto& y = trainingSet[idx].second;
-
-				Eigen::Index maxYHat, maxY;
-				yhat.maxCoeff(&maxYHat);
-				y.maxCoeff(&maxY);
-
-				if (maxYHat == maxY) {
-					correct++;
-				}
-
-
-			}
-
-			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n", batch + 1 /*offset 0 start*///, options.iterations, correct, options.progressSampleSize, static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
-		//	*/
 		}
 
 	}
