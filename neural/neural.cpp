@@ -76,7 +76,8 @@ Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
 
 enum class ActivationFunctionType {
 	Sigmoid,
-	Tanh
+	Tanh,
+	LeakyReLU
 };
 
 
@@ -105,6 +106,9 @@ struct Layer {
 		else if (json["activation"] == "Tanh") {
 			out.type = ActivationFunctionType::Tanh;
 		}
+		else if (json["activation"] == "LeakyReLU") {
+			out.type = ActivationFunctionType::LeakyReLU;
+		}
 		else {
 			assert(false);
 		}
@@ -129,6 +133,13 @@ Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type) {
 		weights = Eigen::MatrixXf::NullaryExpr(
 			neuronsOut, neuronsIn, [&](int, int) { return dist(gen); });
 	}
+	else if (type == ActivationFunctionType::LeakyReLU) { //He 
+		float scale = 2.0f / (float)neuronsIn;
+		std::normal_distribution<float> dist(0.0f, scale);
+
+		weights = Eigen::MatrixXf::NullaryExpr(
+			neuronsOut, neuronsIn, [&](int, int) { return dist(gen); });
+	}
 	else {
 		assert(false);
 	}
@@ -145,6 +156,7 @@ struct TrainingOptions {
 const std::unordered_map<ActivationFunctionType, std::function<float(float)>> activationFunctions = {
 	{ActivationFunctionType::Sigmoid, [](const float x) -> float { return  1.0f / (1.0f + exp(-1.0f * x));}},
 	{ActivationFunctionType::Tanh, [](const float x) -> float { return sinh(x) / cosh(x);}}
+	,{ActivationFunctionType::LeakyReLU, [](const float x) -> float { return (x >= 0) ? x : 0.01f * x;}}
 };
 
 const std::unordered_map<ActivationFunctionType, std::function<float(float)>> derivativeMap = {
@@ -154,7 +166,12 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 	}},
 	{ActivationFunctionType::Tanh, [](const float x) -> float {
 		return (1.0f / cosh(x)) * (1.0f / cosh(x));
-	}}
+	}},
+
+	{ActivationFunctionType::LeakyReLU, [](const float x) -> float {
+		return (x > 0) ? 1.0f : 0.0f;
+}}
+
 
 };
 
@@ -429,7 +446,7 @@ int main() {
 
 	std::vector<float> sample;
 	std::string csv;
-	for (float x = -3.0f; x <= 3.0f; x += 0.25f) {
+	for (float x = -1.0f; x <= 1.0f; x += 0.01f) {
 		sample.push_back(x);
 		csv += "x=" + std::to_string(x) + ",";
 	}
@@ -438,26 +455,21 @@ int main() {
 
 	csv += "\n";
 
-	for (float& x : sample) {
-		x /= 3;
-	}
 
-	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 60, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }});
+	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 5, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }});
 
 	LabelledSet observations;
 
 	const auto f = [](const float x) -> float { return x * x; };
 
-	for (float x = -3.0f; x <= 3.0f; x += 0.0005) {
-		const float unmapped_y = f(x);
-		const float mapped_y = (unmapped_y / 4.5f) - 1.0f;
-		const float mapped_x = x / 3.0f;
+	for (float x = -1.0f; x <= 1.0f; x += 0.000005) {
+		
 
 		Eigen::VectorXf x_vec(1);
-		x_vec(0) = mapped_x;
+		x_vec(0) = x;
 
 		Eigen::VectorXf y_vec(1);
-		y_vec(0) = mapped_y;
+		y_vec(0) = f(x);
 
 		observations.push_back({ x_vec, y_vec });
 
@@ -465,33 +477,37 @@ int main() {
 
 
 	const auto evaluator = [&]() -> void {
+		float error = 0.0f;
 		for (const float x : sample) {
-			const float mapped_x = x / 3.0f;
 			Eigen::VectorXf vec(1);
-			vec(0) = mapped_x;
+			vec(0) = x;
 			const Eigen::VectorXf pred = network.predict(vec);
-			const float unmapped_y = pred(0);
-			const float mapped_y = (unmapped_y + 1.0f) * 4.5f;
+			const float y = pred(0);
 
-			csv += std::to_string(mapped_y) + ",";
+			csv += std::to_string(y) + ",";
+
+			error += ((x * x) - y) * ((x * x) - y);
 
 		}
+		error /= (float)sample.size();
+		std::cout << "MSE: " << error << std::endl;
 		csv.pop_back();
 		csv += "\n";
 		};
 
 	network.train(observations, TrainingOptions
 		{
-			.batchSize = 50,
-			.learningRate = 0.01f,
-			.iterations = 100,
+			.batchSize = 100,
+			.learningRate = 0.3f,
+			.iterations = 1500,
 			.progressSampleSize = 0
 		}, evaluator);
 
-	network.WriteNetworkAsJson("C:/Users/Sam/Desktop/quadratic.json");
+	network.WriteNetworkAsJson("C:/Users/Sam/Desktop/predictor.json");
 
 
-	std::cout << csv;
+	std::ofstream out("C:/Users/Sam/Desktop/output.csv");
+	out << csv;
 
 	return 0;
 
