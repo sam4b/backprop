@@ -175,7 +175,7 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 };
 
 //copy xs as we need to reuse a matrix of its size anyway!
-void matrix_based_backprop(Eigen::VectorXf xs, const Eigen::VectorXf& ys, const std::vector<Layer>& layers, Eigen::MatrixXf& biasErrors, Eigen::MatrixXf& weightErrors) {
+void matrix_based_backprop(Eigen::VectorXf xs, const Eigen::VectorXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::MatrixXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
 	std::vector<Eigen::MatrixXf> zs; //weighted sums
 	std::vector<Eigen::MatrixXf> as; //activations
 	//Reserve ! (re-use matrices ?)
@@ -202,12 +202,24 @@ void matrix_based_backprop(Eigen::VectorXf xs, const Eigen::VectorXf& ys, const 
 
 	//Compute error at Lth layer
 	const Eigen::MatrixXf cost_derivative = (ys - xs);
-	const Eigen::MatrixXf final_weighted_sum = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
+	const Eigen::MatrixXf zs_derivative = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
 
-	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(final_weighted_sum);
+	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(zs_derivative);
 
-	//Normalb ackprop recurrence for lth layer
+	biasErrors.back() = delta;
+	weightErrors.back() = delta * as[as.size() - 2].transpose();
 
+	//Normal backprop recurrence for lth layer
+
+	for (int layer = layers.size() - 2; layer >= 0; layer--) {
+		const Eigen::MatrixXf zs_derivative = zs[layer].unaryExpr(derivativeMap.at(layers[layer].type));
+		const Eigen::MatrixXf weight_error_product = layers[layer + 1].weights.transpose() * delta;
+
+		delta = zs_derivative.cwiseProduct(weight_error_product);
+
+		biasErrors[layer] = delta;
+		weightErrors[layer] = delta * as[layer].transpose();
+	}
 
 }
 
