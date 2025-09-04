@@ -174,6 +174,43 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 
 };
 
+//copy xs as we need to reuse a matrix of its size anyway!
+void matrix_based_backprop(Eigen::VectorXf xs, const Eigen::VectorXf& ys, const std::vector<Layer>& layers, Eigen::MatrixXf& biasErrors, Eigen::MatrixXf& weightErrors) {
+	std::vector<Eigen::MatrixXf> zs; //weighted sums
+	std::vector<Eigen::MatrixXf> as; //activations
+	//Reserve ! (re-use matrices ?)
+
+	as.push_back(xs);
+
+	int n = xs.cols(); //Mini batch size!
+	//good idea to assert xs.cols() == options.miniBatchSize;
+
+
+	//Feed-forward the batch 
+	for (const auto& layer : layers) {
+		Eigen::MatrixXf biases = layer.bias.replicate(1, n); //store this somewhere else per layer, repeated memory allocs + computation!
+
+		Eigen::MatrixXf z = layer.weights * xs + layer.bias;
+		Eigen::MatrixXf a = z.unaryExpr(activationFunctions.at(layer.type));
+
+		zs.push_back(z);
+		as.push_back(a);
+
+		xs = a;
+		n = xs.cols();
+	}
+
+	//Compute error at Lth layer
+	const Eigen::MatrixXf cost_derivative = (ys - xs);
+	const Eigen::MatrixXf final_weighted_sum = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
+
+	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(final_weighted_sum);
+
+	//Normalb ackprop recurrence for lth layer
+
+
+}
+
 
 void backprop(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& data, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) { 
 	std::vector<Eigen::VectorXf> weightedSums; 
@@ -460,7 +497,8 @@ private:
 
 	std::vector<Layer> layers;
 };
-int main() {
+
+void experiment() {
 
 	std::vector<float> sample;
 	std::string csv;
@@ -487,10 +525,10 @@ int main() {
 	const auto norm = [](const float x) -> float { //Map from [0, 2pi] to [-1, 1]
 		return   2 * (x - 0.0f) / (2.0f * 3.14159f - 0.0f) - 1.0f;
 		};
-		
+
 
 	for (float x = 0.0f; x <= 3.14159f * 2.0f; x += delta) {
-		
+
 
 		Eigen::VectorXf x_vec(1);
 		x_vec(0) = norm(x);
@@ -535,11 +573,9 @@ int main() {
 
 	std::ofstream out("C:/Users/Sam/Desktop/output.csv");
 	out << csv;
+}
 
-	return 0;
-
-/*
-
+int main() {
 	const auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 	const std::filesystem::path jsonPath = "C:/Users/Sam/Desktop/mynetwork.json";
@@ -586,9 +622,6 @@ int main() {
 	else {
 		return -1;
 	}
-
-
-*/
 	return 0;
 }
 
