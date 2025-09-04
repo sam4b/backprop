@@ -117,9 +117,8 @@ struct Layer {
 };
 
 //Xavier weight initialisation cuz sigmoid
-Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type) {
-	std::random_device rd;
-	std::mt19937 gen(rd());
+Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type, const int randomState) {
+	std::mt19937 gen(randomState);
 
 	Eigen::MatrixXf weights;
 	Eigen::VectorXf bias = Eigen::VectorXf::Zero(neuronsOut);
@@ -315,15 +314,26 @@ void print(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& pair) {
 
 class Network {
 public:
-	Network(const std::vector<std::pair<int, ActivationFunctionType>>& neurons) {
-		//TBA: Add weight initialization type (enum)?
-		//	   Add custom activation functions (ReLU, etc - also add this to JSON schema).
-
+	//TBA: Add weight initialization type (enum)?
+	Network(const std::vector<std::pair<int, ActivationFunctionType>>& neurons, const int randomState) {
+		m_randomState = randomState;
 		for (int i = 0; i < neurons.size() - 1; i++) {
 			const int out = neurons[i + 1].first;
 			const int in = neurons[i].first;
 
-			layers.emplace_back(createLayer(in, out, neurons[i].second));
+			layers.emplace_back(createLayer(in, out, neurons[i].second, this->rand()));
+		}
+
+	}
+
+	Network(const std::vector<std::pair<int, ActivationFunctionType>>& neurons) {
+
+		m_randomState = std::random_device()();
+		for (int i = 0; i < neurons.size() - 1; i++) {
+			const int out = neurons[i + 1].first;
+			const int in = neurons[i].first;
+
+			layers.emplace_back(createLayer(in, out, neurons[i].second, this->rand()));
 		}
 
 	}
@@ -333,8 +343,10 @@ public:
 
 		const nlohmann::json json = nlohmann::json::parse(in);
 
+		m_randomState = std::random_device()(); //tba hacky
 		fromjson(json);
 	}
+
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
 		SGD(trainingSet, options, []() {});
@@ -363,9 +375,8 @@ public:
 	}
 private:
 	void SGD(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
-
-		std::random_device device;
-		std::mt19937 mersenne(device());
+		
+		std::mt19937 mersenne(this->rand());
 		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
 
 		for (int batch = 0; batch < options.iterations; batch++) {
@@ -440,6 +451,13 @@ private:
 		return out;
 	}
 
+	int rand() {
+		m_randomState = (1103515245 * m_randomState + 12345) & 0x7fffffff;
+		return m_randomState;
+	}
+
+	int m_randomState;
+
 	std::vector<Layer> layers;
 };
 int main() {
@@ -456,7 +474,7 @@ int main() {
 	csv += "\n";
 
 
-	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 5, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }});
+	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 15, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }}, 55);
 
 	LabelledSet observations;
 
