@@ -6,11 +6,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <sstream>
-#include <cstdint>
 #include <fstream>
-#include <iostream>
-#include <vector>
-#include <Eigen/Dense>
 #include <filesystem>
 #include <magic_enum/magic_enum.hpp>
 #include <nlohmann/json.hpp>
@@ -175,20 +171,19 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 };
 
 //copy xs as we need to reuse a matrix of its size anyway!
-void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) {
+void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors,
+	const std::vector<Eigen::MatrixXf>& biasMatricesPerLayer) {
 	std::vector<Eigen::MatrixXf> zs; //weighted sums
 	std::vector<Eigen::MatrixXf> as; //activations
 	//Reserve ! (re-use matrices ?)
 
 	as.push_back(xs);
 
-	int n = xs.cols(); //Mini batch size!
-	//good idea to assert xs.cols() == options.miniBatchSize;
-
-
 	//Feed-forward the batch 
+	int biasIdx = 0;
+	assert(biasMatricesPerLayer.size() == layers.size());
 	for (const auto& layer : layers) {
-		Eigen::MatrixXf biases = layer.bias.replicate(1, n); //store this somewhere else per layer, repeated memory allocs + computation!
+		const Eigen::MatrixXf& biases = biasMatricesPerLayer[biasIdx++];
 
 		Eigen::MatrixXf z = layer.weights * xs + biases;
 		Eigen::MatrixXf a = z.unaryExpr(activationFunctions.at(layer.type));
@@ -197,7 +192,6 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 		as.push_back(a);
 
 		xs = a;
-		n = xs.cols();
 	}
 
 	//Compute error at Lth layer
@@ -206,7 +200,7 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 
 	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(zs_derivative);
 
-	biasErrors.back() = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bia sfor this layer
+	biasErrors.back() = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bias for this layer
 	weightErrors.back() = delta * as[as.size() - 2].transpose();
 
 	//Normal backprop recurrence for lth layer
@@ -230,42 +224,6 @@ void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const 
 }
 
 
-void backprop(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& data, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors) { 
-	std::vector<Eigen::VectorXf> weightedSums; 
-	std::vector<Eigen::VectorXf> activations; 
-	const Eigen::VectorXf xcopy = data.first; 
-	Eigen::VectorXf x = data.first; 
-	activations.push_back(x); 
-
-	for (const auto& layer : layers) {
-		weightedSums.push_back(layer.weights * x + layer.bias);
-		activations.push_back(weightedSums.back());
-		activations.back() = activations.back().unaryExpr(activationFunctions.at(layer.type));
-		x = activations.back(); 
-	} 
-	const auto& label = data.second; //y
-	const auto& predicted_label = x; //y hat 
-
-
-
-	Eigen::VectorXf delta = (predicted_label - label).cwiseProduct(weightedSums.back().unaryExpr(derivativeMap.at(layers.back().type)));
-
-    assert(weightErrors.size() == biasErrors.size());
-	assert(weightedSums.size() == biasErrors.size()); 
-	assert(biasErrors.size() == layers.size());
-
-	biasErrors[biasErrors.size() - 1] = delta;
-	weightErrors[weightErrors.size() - 1] = delta * activations[activations.size() - 2].transpose(); 
-
-	for (int i = biasErrors.size() - 2; i >= 0; i--) {
-		const Eigen::VectorXf activationDerivative = weightedSums[i].unaryExpr(derivativeMap.at(layers[i].type));
-		assert(i + 1 < layers.size()); //loop invariant
-		delta = layers[i + 1].weights.transpose() * delta;
-		delta = delta.cwiseProduct(activationDerivative);
-		biasErrors[i] = delta;
-		weightErrors[i] = delta * activations[i].transpose();
-	}
-} 
 
 using LabelledSet = std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>;
 
@@ -402,27 +360,16 @@ public:
 		fromjson(json);
 	}
 
-#define MatrixSGDEnabled 1
-
 	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
 		const auto batchUpdate = [&]() -> void {
 			static int batch = 0;
 			std::cout << std::format("Batch {}/{} completed.\n", batch++, options.batchSize);
 			};
-
-#ifdef MatrixSGDEnabled
-		this->MatrixSGD(trainingSet, options, batchUpdate);
-#else
-		SGD(trainingSet, options, batchUpdate);
-#endif
+		MatrixSGD(trainingSet, options, batchUpdate);
 	}
 
 	void train(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
-#ifdef MatrixSGDEnabled
-		this->MatrixSGD(trainingSet, options, progressUpdater);
-#else
-		SGD(trainingSet, options, progressUpdater);
-#endif
+		MatrixSGD(trainingSet, options, progressUpdater);
 	}
 	
 	void WriteNetworkAsJson(const std::filesystem::path& dest) const {
@@ -447,14 +394,29 @@ private:
 		std::mt19937 mersenne(this->rand());
 		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
 
-		for (int batch = 0; batch < options.iterations; batch++) {
-			std::vector<Eigen::VectorXf> updateBias;
-			std::vector<Eigen::MatrixXf> updateWeights;
+		std::vector<Eigen::MatrixXf> biasMatrices; //create a bias matrix for n examples (just the bias vector augmented with itself n times) per layer.
+		biasMatrices.reserve(layers.size());
 
-			for (const auto& layer : layers) {
-				updateBias.push_back(Eigen::VectorXf::Zero(layer.bias.size()));
-				//add weights
-				updateWeights.push_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols() * options.batchSize)); //I think this is right?
+		for (const auto& layer : layers) {
+			biasMatrices.emplace_back(layer.bias.replicate(1, options.batchSize));
+		}
+
+		std::vector<Eigen::VectorXf> updateBias;
+		std::vector<Eigen::MatrixXf> updateWeights;
+
+		updateBias.reserve(layers.size());
+		updateWeights.reserve(layers.size());
+
+		for (const auto& layer : layers) {
+			updateBias.push_back(Eigen::VectorXf::Zero(layer.bias.size()));
+			updateWeights.push_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols() * options.batchSize)); //I think this is right?
+		}
+
+		for (int batch = 0; batch < options.iterations; batch++) {
+
+			for (int i = 0; i < layers.size(); i++) {
+				updateBias[i] = Eigen::VectorXf::Zero(layers[i].bias.size());
+				updateWeights[i] = Eigen::MatrixXf::Zero(layers[i].weights.rows(), layers[i].weights.cols() * options.batchSize); //I think this is right?
 			}
 
 			const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
@@ -479,7 +441,7 @@ private:
 				}
 			}
 
-			matrix_based_backprop(xs, ys, layers, updateBias, updateWeights);
+			matrix_based_backprop(xs, ys, layers, updateBias, updateWeights, biasMatrices);
 
 			assert(layers.size() == updateBias.size());
 			assert(updateWeights.size() == updateBias.size());
@@ -496,44 +458,6 @@ private:
 		}
 	}
 
-	void SGD(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
-		
-		std::mt19937 mersenne(this->rand());
-		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
-
-		for (int batch = 0; batch < options.iterations; batch++) {
-			std::vector<Eigen::VectorXf> updateBias;
-			std::vector<Eigen::MatrixXf> updateWeights;
-
-			for (const auto& layer : layers) {
-				updateBias.emplace_back(Eigen::VectorXf::Zero(layer.bias.size()));
-				updateWeights.emplace_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols()));
-
-			}
-
-			for (int sample = 0; sample < options.batchSize; sample++) {
-				const auto idx = sampler(mersenne);
-
-				std::vector<Eigen::VectorXf> deltaBias(layers.size());
-				std::vector<Eigen::MatrixXf> deltaWeight(layers.size());
-
-				backprop(trainingSet[idx], layers, deltaBias, deltaWeight);
-
-				for (int i = 0; i < updateBias.size(); i++) {
-					updateBias[i] += deltaBias[i];
-					updateWeights[i] += deltaWeight[i];
-				}
-			}
-
-			for (int i = 0; i < layers.size(); i++) {
-				layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
-				layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
-			}
-
-			progressUpdater();
-		}
-
-	}
 
 	void fromjson(const nlohmann::json& json) {
 		for (const auto& layer : json["layers"]) {
