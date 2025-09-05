@@ -415,8 +415,8 @@ private:
 		for (int batch = 0; batch < options.iterations; batch++) {
 
 			for (int i = 0; i < layers.size(); i++) {
-				updateBias[i] = Eigen::VectorXf::Zero(layers[i].bias.size());
-				updateWeights[i] = Eigen::MatrixXf::Zero(layers[i].weights.rows(), layers[i].weights.cols() * options.batchSize); //I think this is right?
+				updateBias[i].setZero();
+				updateWeights[i].setZero();
 			}
 
 			const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
