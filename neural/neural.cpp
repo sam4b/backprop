@@ -73,7 +73,8 @@ Eigen::VectorXf JsonToVector(const nlohmann::json& json) {
 enum class ActivationFunctionType {
 	Sigmoid,
 	Tanh,
-	LeakyReLU
+	LeakyReLU,
+	Identity
 };
 
 
@@ -105,6 +106,9 @@ struct Layer {
 		else if (json["activation"] == "LeakyReLU") {
 			out.type = ActivationFunctionType::LeakyReLU;
 		}
+		else if (json["activation"] == "Identity") {
+			out.type = ActivationFunctionType::Identity;
+		}
 		else {
 			assert(false);
 		}
@@ -119,7 +123,7 @@ Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type, co
 	Eigen::MatrixXf weights;
 	Eigen::VectorXf bias = Eigen::VectorXf::Zero(neuronsOut);
 
-	if (type == ActivationFunctionType::Sigmoid || type == ActivationFunctionType::Tanh) {
+	if (type == ActivationFunctionType::Sigmoid || type == ActivationFunctionType::Tanh || type == ActivationFunctionType::Identity) {
 		//Xavier
 
 		float scale = std::sqrt(2.0f / (neuronsIn + neuronsOut));
@@ -133,7 +137,7 @@ Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type, co
 		std::normal_distribution<float> dist(0.0f, scale);
 
 		weights = Eigen::MatrixXf::NullaryExpr(
-			neuronsOut, neuronsIn, [&](int, int) { return dist(gen); });
+			neuronsOut, neuronsIn, [&](int, int) { return dist(gen); }); 
 	}
 	else {
 		assert(false);
@@ -144,14 +148,14 @@ Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type, co
 struct TrainingOptions {
 	int batchSize;
 	float learningRate;
-	int iterations;
-	int progressSampleSize;
+	int epochs;
 };
 
 const std::unordered_map<ActivationFunctionType, std::function<float(float)>> activationFunctions = {
 	{ActivationFunctionType::Sigmoid, [](const float x) -> float { return  1.0f / (1.0f + exp(-1.0f * x));}},
 	{ActivationFunctionType::Tanh, [](const float x) -> float { return sinh(x) / cosh(x);}}
-	,{ActivationFunctionType::LeakyReLU, [](const float x) -> float { return (x >= 0) ? x : 0.01f * x;}}
+	,{ActivationFunctionType::LeakyReLU, [](const float x) -> float { return (x >= 0) ? x : 0.01f * x;}},
+	{ActivationFunctionType::Identity, [](const float x) { return x;}}
 };
 
 const std::unordered_map<ActivationFunctionType, std::function<float(float)>> derivativeMap = {
@@ -164,8 +168,9 @@ const std::unordered_map<ActivationFunctionType, std::function<float(float)>> de
 	}},
 
 	{ActivationFunctionType::LeakyReLU, [](const float x) -> float {
-		return (x > 0) ? 1.0f : 0.0f;
-}}
+		return (x > 0) ? 1.0f : 0.01f;
+}},
+	{ActivationFunctionType::Identity,[](const float x) { return 1.0f;}} 
 
 
 };
@@ -360,15 +365,15 @@ public:
 		fromjson(json);
 	}
 
-	void train(const LabelledSet& trainingSet, const TrainingOptions options) {
+	void train(LabelledSet& trainingSet, const TrainingOptions options) {
 		const auto batchUpdate = [&]() -> void {
-			static int batch = 0;
-			std::cout << std::format("Batch {}/{} completed.\n", batch++, options.batchSize);
+			static int epochs = 1;
+			std::cout << std::format("Epoch {}/{} completed.\n", epochs++, options.batchSize);
 			};
 		MatrixSGD(trainingSet, options, batchUpdate);
 	}
 
-	void train(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
+	void train(LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
 		MatrixSGD(trainingSet, options, progressUpdater);
 	}
 	
@@ -390,7 +395,7 @@ public:
 		return x;
 	}
 private:
-	void MatrixSGD(const LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
+	void MatrixSGD(LabelledSet& trainingSet, const TrainingOptions options, const std::function<void()>& progressUpdater) {
 		std::mt19937 mersenne(this->rand());
 		std::uniform_int_distribution<> sampler(0, trainingSet.size() - 1);
 
@@ -412,50 +417,52 @@ private:
 			updateWeights.push_back(Eigen::MatrixXf::Zero(layer.weights.rows(), layer.weights.cols() * options.batchSize)); //I think this is right?
 		}
 
-		for (int batch = 0; batch < options.iterations; batch++) {
+		for (int epoch = 0; epoch < options.epochs; epoch++) {
+			std::shuffle(trainingSet.begin(), trainingSet.end(), mersenne);
+			int idx = 0;
+			for (int batch = 0; batch < trainingSet.size() / options.batchSize; batch++) {
 
-			for (int i = 0; i < layers.size(); i++) {
-				updateBias[i].setZero();
-				updateWeights[i].setZero();
-			}
-
-			const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
-			const int y_rows = trainingSet[0].second.size();
-
-			Eigen::MatrixXf xs = Eigen::MatrixXf::Zero(x_rows, options.batchSize); //For MNIST, should be 784 x N matrix.
-			Eigen::MatrixXf ys = Eigen::MatrixXf::Zero(y_rows, options.batchSize); //For MNIST, should be 10 X N matrix.
-
-			//Stick them all together
-
-			for (int i = 0; i < options.batchSize; i++) {
-				const auto idx = sampler(mersenne);
-
-				const auto& [x, y] = trainingSet[idx];
-
-				for (int j = 0; j < x_rows; j++) {
-					xs(j, i) = x(j);
+				for (int i = 0; i < layers.size(); i++) {
+					updateBias[i].setZero();
+					updateWeights[i].setZero();
 				}
 
-				for (int j = 0; j < y_rows; j++) {
-					ys(j, i) = y(j);
+				const int x_rows = trainingSet[0].first.size(); //Number of rows of the input vector
+				const int y_rows = trainingSet[0].second.size();
+
+				Eigen::MatrixXf xs = Eigen::MatrixXf::Zero(x_rows, options.batchSize); //For MNIST, should be 784 x N matrix.
+				Eigen::MatrixXf ys = Eigen::MatrixXf::Zero(y_rows, options.batchSize); //For MNIST, should be 10 X N matrix.
+
+				//Stick them all together
+
+
+				for (int i = 0; i < options.batchSize; i++) {
+					assert(idx < trainingSet.size()); 
+					const auto& [x, y] = trainingSet[idx++];
+
+					for (int j = 0; j < x_rows; j++) {
+						xs(j, i) = x(j);
+					}
+
+					for (int j = 0; j < y_rows; j++) {
+						ys(j, i) = y(j);
+					}
 				}
+
+				matrix_based_backprop(xs, ys, layers, updateBias, updateWeights, biasMatrices);
+
+				assert(layers.size() == updateBias.size());
+				assert(updateWeights.size() == updateBias.size());
+
+				for (int i = 0; i < layers.size(); i++) {
+					layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
+					layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
+				}
+
 			}
-
-			matrix_based_backprop(xs, ys, layers, updateBias, updateWeights, biasMatrices);
-
-			assert(layers.size() == updateBias.size());
-			assert(updateWeights.size() == updateBias.size());
-
-			for (int i = 0; i < layers.size(); i++) {
-				layers[i].bias -= (options.learningRate / (float)options.batchSize) * updateBias[i];
-				layers[i].weights -= (options.learningRate / (float)options.batchSize) * updateWeights[i];
-			}
-
 			progressUpdater();
-
-			
-		
 		}
+	
 	}
 
 
@@ -488,7 +495,11 @@ void experiment() {
 
 	std::vector<float> sample;
 	std::string csv;
-	for (float x = 0.0f; x <= 3.14159f * 2.0f; x += 0.01f) {
+
+	const float end = 3.14159f * 2.0f;
+	const float begin = 0.0f;
+
+	for (float x = begin; x <= end; x += 0.01f) {
 		sample.push_back(x);
 		csv += "x=" + std::to_string(x) + ",";
 	}
@@ -498,22 +509,22 @@ void experiment() {
 	csv += "\n";
 
 
-	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::LeakyReLU}, { 20, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }}, 55);
+	Network network(std::vector<std::pair<int, ActivationFunctionType>>{{1, ActivationFunctionType::Tanh}, { 60, ActivationFunctionType::Tanh }, { 35, ActivationFunctionType::Tanh }, { 10, ActivationFunctionType::Tanh }, { 1, ActivationFunctionType::Tanh }}, 55);
 
 	LabelledSet observations;
 
 	const auto f = [](const float x) -> float { return sin(x); };
 
-	const float delta = 0.000005;
+	const float delta = 0.0002;
 	const int amount = (int)(2.0f / delta);
 	observations.reserve(amount);
 
 	const auto norm = [](const float x) -> float { //Map from [0, 2pi] to [-1, 1]
-		return   2 * (x - 0.0f) / (2.0f * 3.14159f - 0.0f) - 1.0f;
+		return   2.0f * (x - 0.0f) / (2.0f * 3.14159f - 0.0f) - 1.0f;
 		};
 
 
-	for (float x = 0.0f; x <= 3.14159f * 2.0f; x += delta) {
+	for (float x = begin; x <= end; x += delta) {
 
 
 		Eigen::VectorXf x_vec(1);
@@ -548,10 +559,9 @@ void experiment() {
 
 	network.train(observations, TrainingOptions
 		{
-			.batchSize = 500,
-			.learningRate = 0.75f,
-			.iterations = 500,
-			.progressSampleSize = 0
+			.batchSize = 10,
+			.learningRate = 0.01f,
+			.epochs = 50
 		}, evaluator);
 
 	network.WriteNetworkAsJson("C:/Users/Sam/Desktop/predictor.json");
@@ -562,7 +572,9 @@ void experiment() {
 }
 
 int main() {
-	const auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
+	experiment();
+	return 0;
+	auto train = readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte");
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 	const std::filesystem::path jsonPath = "C:/Users/Sam/Desktop/mynetwork.json";
 
@@ -583,13 +595,14 @@ int main() {
 		}
 
 		const TrainingOptions options = {
-		.batchSize = 100,
+		.batchSize = 10,
 		.learningRate = 3.0f,
-		.iterations = 200,
-		.progressSampleSize = 50
+		.epochs = 30
 		};
 
-		Network network(std::vector<std::pair<int, ActivationFunctionType>>{ {784, ActivationFunctionType::Sigmoid}, { 60, ActivationFunctionType::Sigmoid }, { 10, ActivationFunctionType::Sigmoid } }); //784 neurons in, 10 neurons out (prediction: [0-9].)
+		const int sampleSize = 50;
+
+		Network network(std::vector<std::pair<int, ActivationFunctionType>>{ {784, ActivationFunctionType::Sigmoid}, { 30, ActivationFunctionType::Sigmoid }, { 10, ActivationFunctionType::Sigmoid } }); //784 neurons in, 10 neurons out (prediction: [0-9].)
 		
 		std::random_device rd;
 		std::mt19937 mersenne(rd());
@@ -597,9 +610,9 @@ int main() {
 
 		const auto progressUpdater = [&]() -> void {
 			int correct = 0;
-			static int batch = 0;
+			static int epoch = 1;
 
-			for (int i = 0; i < options.progressSampleSize; i++) {
+			for (int i = 0; i < sampleSize; i++) {
 				const int idx = sampler(mersenne);
 
 				const auto yhat = network.predict(train[idx].first);
@@ -617,10 +630,10 @@ int main() {
 
 			}
 
-			std::cout << std::format("Batch {}/{}. {}/{} correct ({}%).\n",
-				batch++, options.iterations,
-				correct, options.progressSampleSize,
-				static_cast<float>(correct) * 100.0f / static_cast<float>(options.progressSampleSize));
+			std::cout << std::format("Epoch {}/{}. {}/{} correct ({}%).\n",
+				epoch++, options.epochs,
+				correct, sampleSize,
+				static_cast<float>(correct) * 100.0f / static_cast<float>(sampleSize));
 		};
 		
 		network.train(train, options, progressUpdater);
@@ -646,6 +659,6 @@ int main() {
 		return -1;
 	}
 	return 0;
-}
+} 
 
 
