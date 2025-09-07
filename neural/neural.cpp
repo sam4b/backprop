@@ -11,6 +11,8 @@
 #include <magic_enum/magic_enum.hpp>
 #include <nlohmann/json.hpp>
 #include <functional>
+#include <future>
+#include <thread>
 
 nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
 	nlohmann::json out;
@@ -569,6 +571,21 @@ void experiment() {
 
 	std::ofstream out("C:/Users/Sam/Desktop/output.csv");
 	out << csv;
+}
+
+//tba: split test into validation and test
+TrainingOptions gridsearch(const std::vector<TrainingOptions>& hyperparameters, const LabelledSet& trainingSet, const LabelledSet& validationSet) {
+	std::vector<std::thread> threads;
+
+
+	for (const auto& hyperparams : hyperparameters) {
+		std::async([&]() -> std::pair<TrainingOptions, int> {
+			const auto params = hyperparams;
+			const auto train = trainingSet;
+			Network network; //TBA add a struct for network layout
+			});
+	}
+	
 }
 
 int main() {
