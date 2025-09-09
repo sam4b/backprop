@@ -8,6 +8,7 @@
 #include <iostream>
 #include <format>
 #include "Backpropagation.hpp"
+
 using LabelledSet = std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>;
 
 /*Slight regression for now, moving to a singular activation function for the whole of the network*/

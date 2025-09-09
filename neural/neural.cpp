@@ -25,7 +25,18 @@ std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train
 
 
 int main() {
-	const auto [train, validation] = createValidationSet(readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte"), 20);
+	const auto [train, validation] = createValidationSet(readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte"), 1000);
+	
+	for (int i = 0; i < 10; i++) {
+		print(train[i]);
+	}
+
+
+	for (int i = 0; i < 10; i++) {
+		print(validation[i]);
+	}
+
+	
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 
 	const std::filesystem::path jsonPath = "C:/Users/Sam/Desktop/mynetwork.json";
@@ -55,44 +66,49 @@ int main() {
 			int validation_correct = 0;
 			static int epoch = 1;
 
+			
+			const auto crossEntropy = [](const Eigen::VectorXf& y,
+				 Eigen::VectorXf a) -> Eigen::VectorXf {
+					const float eps = 1e-6f;  //Map to [eps, 1-eps] for sigmoid activation (if eps ~= 0 or eps ~= 1 then log produces NaN).
+					a = a.array().min(1.0f - eps).max(eps);
+
+					const Eigen::VectorXf ones = Eigen::VectorXf::Ones(y.size());
+
+					Eigen::VectorXf term1 = y.array() * a.array().log();
+					Eigen::VectorXf term2 = (ones - y).array() * (ones - a).array().log();
+
+					return -1.0f * (term1 + term2);
+				};
+
+			float cost_validation = 0.0f;
+
 			for (const auto& [x, y] : validation) {
 				const auto yhat = network.predict(x);
-				Eigen::Index maxYHat, maxY;
-				yhat.maxCoeff(&maxYHat);
-				y.maxCoeff(&maxY);
-
-				if (maxYHat == maxY) {
-					validation_correct++;
-				}
+				
+				cost_validation += crossEntropy(y, yhat).sum();
 			}
 
-			int train_correct = 0;
-			static std::random_device rng;
-			static std::mt19937 mersenne(rng());
-			
-			const int trainSampleSize = 30;
-			std::uniform_int_distribution<int> dist(0, train.size());
-			for (int i = 0; i < trainSampleSize; i++) {
-				const int idx = dist(mersenne);
-				const auto& [x, y] = train[idx];
+			cost_validation /= (float)validation.size();
+
+			float cost_train = 0.0f;
+			for (const auto& [x, y] : train) {
 				const auto yhat = network.predict(x);
-				Eigen::Index maxYHat, maxY;
-				yhat.maxCoeff(&maxYHat);
-				y.maxCoeff(&maxY);
+				
 
-				if (maxYHat == maxY) {
-					train_correct++;
-				}
+				cost_train += crossEntropy(y, yhat).sum();
 			}
+			cost_train /= (float)train.size();
 
-
-
+			std::cout << cost_validation << "," << cost_train << "\n";
+			/*
+			
 			std::cout << std::format("Epoch {}/{}. {}/{} correct on the validation set ({}%) and {}/{} correct on a random sample from the training set ({}%).\n",
 				epoch++, params.epochs,
 				validation_correct, validation.size(),
 				static_cast<float>(validation_correct) * 100.0f / static_cast<float>(validation.size()),
 				train_correct, trainSampleSize,
-				static_cast<float>(train_correct) * 100.0f / static_cast<float>(trainSampleSize));
+				static_cast<float>(train_correct) * 100.0f / static_cast<float>(trainSampleSize));*/
+				
 			});
 		
 		network.WriteNetworkAsJson(jsonPath);

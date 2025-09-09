@@ -53,11 +53,11 @@ inline void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys,
 		xs = a;
 	}
 
-	//Compute error at Lth layer
+	//Compute error at Lth layer (cross-entropy, TBA: allow hyperparameter for loss function)
 	const Eigen::MatrixXf cost_derivative = (xs - ys);
-	const Eigen::MatrixXf zs_derivative = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
+	//const Eigen::MatrixXf zs_derivative = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
 
-	Eigen::MatrixXf delta = cost_derivative.cwiseProduct(zs_derivative);
+	Eigen::MatrixXf delta = cost_derivative;//.cwiseProduct(zs_derivative);
 
 	biasErrors.back() = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bias for this layer
 	weightErrors.back() = delta * as[as.size() - 2].transpose();
