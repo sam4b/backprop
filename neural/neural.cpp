@@ -1,5 +1,7 @@
 #include "Network.hpp"
 #include "MNISTLoader.hpp"
+#include <cuda_runtime.h>
+#include "TestPrint.cuh"
 //Split test set into a validation and trainingSet
 //Returns: a pair {trainingSet, validationSet}
 std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train, const int validationCount) {
@@ -23,8 +25,11 @@ std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train
 	return { trainOut, validation };
 }
 
-
 int main() {
+
+	g();
+
+	return 0;
 	const auto [train, validation] = createValidationSet(readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte"), 1000);
 	
 	for (int i = 0; i < 10; i++) {

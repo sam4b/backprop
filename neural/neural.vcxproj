@@ -54,6 +54,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.0.props" />
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -136,8 +137,13 @@
     <ClInclude Include="Backpropagation.hpp" />
     <ClInclude Include="Layer.hpp" />
     <ClInclude Include="MNISTLoader.hpp" />
+    <ClInclude Include="TestPrint.cuh" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="TestPrint.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.0.targets" />
   </ImportGroup>
 </Project>

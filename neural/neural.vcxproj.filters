@@ -21,6 +21,9 @@
     <ClCompile Include="Network.hpp">
       <Filter>Header Files</Filter>
     </ClCompile>
+    <ClCompile Include="test.cu">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Layer.hpp">
