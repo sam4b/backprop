@@ -1,5 +1,5 @@
 #include "TestPrint.cuh"
-
+#include "Network.hpp"
 
 __global__ void f() {
 	const int threadId = threadIdx.x + blockIdx.x * blockDim.x;
@@ -19,6 +19,84 @@ __global__ void applyTanh(const int N, float* data) {
 
 	data[threadID] = tanhImplementation(data[threadID]);
 	
+}
+
+//plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
+struct RawLayer {
+	float* weights;
+	float* bias;
+	int neuronsIn;
+	int neuronsOut;
+};
+
+struct Matrix {
+	float* data;
+	int columns;
+	int rows;
+};
+
+
+std::vector<RawLayer> createNetwork(const std::vector<int>& layout, ActivationFunctionType function) {
+	std::vector<RawLayer> out;
+	out.reserve(layout.size());
+
+	std::random_device random();
+	std::mt19937 mersenne(random);
+
+	int neuronsIn = layout[0];
+	for (int i = 1; i < layout.size(); i++) {
+		const int neuronsOut = layout[i];
+
+		float scale = 0.0f;
+		if (function == ActivationFunctionType::Sigmoid || function == ActivationFunctionType::Tanh || function == ActivationFunctionType::Identity) {
+			float scale = std::sqrt(2.0f / (neuronsIn + neuronsOut));
+
+		}
+		else if (function == ActivationFunctionType::LeakyReLU) {
+			float scale = 2.0f / (float)neuronsIn;
+
+		}
+		else {
+			assert(false);
+		}
+		std::normal_distribution<float> dist(0.0f, scale);
+
+		float* weights = new float[neuronsIn * neuronsOut];
+		for (int j = 0; j < neuronsIn * neuronsOut; j++) {
+			weights[j] = dist(mersenne);
+		}
+
+		float* bias = new float[neuronsOut];
+		std::memset(bias, 0, sizeof(float) * neuronsOut);
+
+		RawLayer layer;
+		layer.bias = bias;
+		layer.weights = weights;
+		layer.neuronsIn = neuronsIn;
+		layer.neuronsOut = neuronsOut;
+
+		out.push_back(layer);
+
+		neuronsIn = neuronsOut;
+	}
+}
+
+void CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, const int rows) {
+	assert(rows == layers[0].neuronsIn);
+	//assume this is a rowsx1 matrix for now 
+	
+	//copy weights and biases
+
+
+
+}
+
+void CUDA_SGD(const std::vector<std::pair<Matrix, Matrix>> trainingData, std::vector<RawLayer>& layers) {
+	
+	//for now, assume the training data can fit in vram (todo: add streaming)
+	//actually, maybe i should just make the training data into two big matrices
+
+
 }
 
 void g() {
