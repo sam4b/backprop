@@ -21,9 +21,6 @@
     <ClCompile Include="Network.hpp">
       <Filter>Header Files</Filter>
     </ClCompile>
-    <ClCompile Include="test.cu">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Layer.hpp">
@@ -35,5 +32,9 @@
     <ClInclude Include="Backpropagation.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="TestPrint.cuh" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="TestPrint.cu" />
   </ItemGroup>
 </Project>

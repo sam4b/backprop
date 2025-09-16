@@ -64,8 +64,8 @@ std::vector<RawLayer> createNetwork(const std::vector<int>& layout, ActivationFu
 	std::vector<RawLayer> out;
 	out.reserve(layout.size());
 
-	std::random_device random();
-	std::mt19937 mersenne(random);
+	std::random_device random;
+	std::mt19937 mersenne(random());
 
 	int neuronsIn = layout[0];
 	for (int i = 1; i < layout.size(); i++) {
@@ -103,6 +103,7 @@ std::vector<RawLayer> createNetwork(const std::vector<int>& layout, ActivationFu
 
 		neuronsIn = neuronsOut;
 	}
+	return out;
 }
 
 std::vector<RawLayer> CUDA_LoadNetwork(const std::vector<RawLayer>& layers) {
@@ -129,6 +130,63 @@ std::vector<RawLayer> CUDA_LoadNetwork(const std::vector<RawLayer>& layers) {
 	}
 
 	return device_layers;
+}
+
+/*
+	c = a . b
+*/
+__global__ void hamdardProduct(int N, float* a, float* b, float* c) {
+	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= N) return;
+
+	c[idx] = a[idx] * b[idx];
+}
+
+__global__ void applySigmoidDerivative(Matrix m) {
+	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= m.rows * m.columns) return;
+
+	//m.data[idx] = sigmoidDerivative(m.data[idx]);
+}
+
+/*
+	Map a nxm matrix -> nx1 vector by summing rowwise (see: Eigen MatrixXf::rowwise()::sum())
+*/
+__global__ void sumRows(float* __restrict__ input, float* __restrict__  output, int N, int M) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (x >= N) return;
+	
+	float sum = 0.0f;
+	for (int i = 0; i < M; i++) {
+		sum += input[x + i * N]; //column major storage in eigen and cuda
+	}
+
+	output[x] = sum;
+}
+
+
+void GPUBackprop(float* device_matrices, const std::vector<Matrix>& biasMatrices,
+	const std::vector<Matrix>& biasErrors, const std::vector<Matrix>& weightErrors
+) {
+	std::vector<Matrix> zs;
+	std::vector<Matrix> as;
+
+
+	std::vector<float*> deltas;
+
+	int deltaIdx = 0;
+
+	for (int layer = biasMatrices.size() - 2; layer >= 0; layer--) {
+		applySigmoidDerivative<<<1,1024>>>(zs[layer]); //sigma'
+		
+
+
+		
+
+	}
+
+	
 }
 
 float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, const int rows) {
@@ -171,9 +229,9 @@ float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, cons
 
 		//now add bias and then apply activation
 		
-		addVector << <1, 256 >> > (layer.neuronsOut, layer.bias, output, output); //i hope aliasing isn't an issue.
+		addVector << <1, 1024 >> > (layer.neuronsOut, layer.bias, output, output); //i hope aliasing isn't an issue.
 
-		applySigmoid << <1, 256 >> > (layer.neuronsOut, output);
+		applySigmoid << <1, 1024 >> > (layer.neuronsOut, output);
 
 
 		//store result in device vector, free output so we can reues it next iteration
@@ -205,6 +263,41 @@ void CUDA_SGD(const std::vector<std::pair<Matrix, Matrix>> trainingData, std::ve
 }
 
 void g() {
+
+
+	const Eigen::MatrixXf toBeSummed{
+		{1,2,3,4,5},
+		{5,6,7,8,6},
+		{10,15,20, 25,7},
+		{100,200,300, 400,8}
+	};
+
+	float* input;
+	
+	printf("Rows:%d,Cols:%d\n", toBeSummed.rows(), toBeSummed.cols());
+
+	const int input_size_bytes = sizeof(float) * toBeSummed.rows() * toBeSummed.cols();
+
+	cudaMalloc(&input, input_size_bytes);
+
+	cudaMemcpy(input, toBeSummed.data(), input_size_bytes, cudaMemcpyHostToDevice);
+
+	const int output_size_bytes = sizeof(float) * toBeSummed.rows() * 1; //1 not necessary but matrix dimensions
+	float* output;
+	cudaMalloc(&output, output_size_bytes);
+	
+	sumRows << <1, 10 >> >(input, output, toBeSummed.rows(), toBeSummed.cols());
+
+	float* device_output = new float[toBeSummed.rows()];
+	cudaMemcpy(device_output, output, output_size_bytes, cudaMemcpyDeviceToHost);
+
+	Eigen::MatrixXf out_mat = Eigen::Map<Eigen::MatrixXf>(device_output, toBeSummed.rows(), 1);
+
+	Eigen::MatrixXf expected_mat = toBeSummed.rowwise().sum();
+
+	std::cout << out_mat << std::endl << expected_mat << std::endl;
+
+	return;
 	f << <1, 5 >> > ();
 
 	Eigen::MatrixXf mat{

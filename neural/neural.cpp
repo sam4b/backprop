@@ -26,10 +26,10 @@ std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train
 }
 
 int main() {
-
 	g();
 
 	return 0;
+
 	const auto [train, validation] = createValidationSet(readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte"), 1000);
 	
 	for (int i = 0; i < 10; i++) {
@@ -106,7 +106,6 @@ int main() {
 
 			std::cout << cost_validation << "," << cost_train << "\n";
 			/*
-			
 			std::cout << std::format("Epoch {}/{}. {}/{} correct on the validation set ({}%) and {}/{} correct on a random sample from the training set ({}%).\n",
 				epoch++, params.epochs,
 				validation_correct, validation.size(),

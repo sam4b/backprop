@@ -1,7 +1,6 @@
 #pragma once
 #include <Eigen/Dense>
 #include <nlohmann/json.hpp>
-#include <magic_enum/magic_enum.hpp>
 #include <random>
 
 inline nlohmann::json VectorToJson(const Eigen::VectorXf& vector) {
@@ -80,7 +79,7 @@ struct Layer {
 
 		out["weights"] = MatrixToJson(weights);
 		out["bias"] = VectorToJson(bias);
-		out["activation"] = magic_enum::enum_name(type);
+		out["activation"] = static_cast<int>(type);
 
 		return out;
 	}
@@ -89,21 +88,8 @@ struct Layer {
 		Layer out;
 		out.weights = JsonToMatrix(json["weights"]);
 		out.bias = JsonToVector(json["bias"]);
-		if (json["activation"] == "Sigmoid") {
-			out.type = ActivationFunctionType::Sigmoid;
-		}
-		else if (json["activation"] == "Tanh") {
-			out.type = ActivationFunctionType::Tanh;
-		}
-		else if (json["activation"] == "LeakyReLU") {
-			out.type = ActivationFunctionType::LeakyReLU;
-		}
-		else if (json["activation"] == "Identity") {
-			out.type = ActivationFunctionType::Identity;
-		}
-		else {
-			assert(false);
-		}
+		out.type = json["activation"];
+		assert(static_cast<int>(out.type) >= 0 && static_cast<int>(out.type) <= static_cast<int>(ActivationFunctionType::Identity));
 		return out;
 	}
 };
