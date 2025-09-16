@@ -145,14 +145,15 @@ float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, cons
 	
 	//TODO: Preallocate all the vectors to be stored for reuse so 0 allocations done on feedforward.
 
+	cublasHandle_t handle;
+	cublasCreate_v2(&handle);
+
+
 	for (RawLayer layer : device_network) {
 		float* output;
 		//neuronsOut x neuronsIn
 		cudaMalloc(&output, sizeof(float) * layer.neuronsOut);
-		
-		cublasHandle_t handle;
-		cublasCreate_v2(&handle);
-
+	
 
 		//w size = layer.neuronsOut * layer.neuronsIn
 		const int m = layer.neuronsOut;
@@ -181,6 +182,7 @@ float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, cons
 		cudaMalloc(&device_vector, sizeof(float) * layer.neuronsOut);
 		cudaMemcpy(device_vector, output, sizeof(float) * layer.neuronsOut, cudaMemcpyDeviceToDevice);
 		cudaFree(output);	
+
 	}
 
 	//result now stored in device_vector
@@ -188,6 +190,7 @@ float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, cons
 	float* result = new float[layers.back().neuronsIn * layers.back().neuronsOut];
 	cudaMemcpy(result, device_vector, sizeof(float) * layers.back().neuronsIn * layers.back().neuronsOut, cudaMemcpyDeviceToHost);
 	cudaFree(device_vector);
+	cublasDestroy_v2(handle);
 	return result;
 
 
