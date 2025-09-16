@@ -10,6 +10,10 @@ __device__ float tanhImplementation(const float x) {
 	return (expf(x) - expf(-1.0f * x)) / (expf(x) + expf(-1.0f * x));
 }
 
+__device__ float sigmoidImplementation(const float x) {
+	return (1.0f / (1.0f + expf(-1.0f * x)));
+}
+
 __global__ void applyTanh(const int N, float* data) {
 	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -19,6 +23,26 @@ __global__ void applyTanh(const int N, float* data) {
 
 	data[threadID] = tanhImplementation(data[threadID]);
 	
+}
+
+__global__ void applySigmoid(const int N, float* data) {
+	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (threadID >= N) {
+		return;
+	}
+
+	data[threadID] = sigmoidImplementation(data[threadID]);
+}
+
+__global__ void addVector(const int N, float* a, float* b, float* out) {
+	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (threadID >= N) {
+		return;
+	}
+
+	out[threadID] = a[threadID] + b[threadID];
 }
 
 //plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
@@ -81,12 +105,90 @@ std::vector<RawLayer> createNetwork(const std::vector<int>& layout, ActivationFu
 	}
 }
 
-void CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, const int rows) {
+std::vector<RawLayer> CUDA_LoadNetwork(const std::vector<RawLayer>& layers) {
+	std::vector<RawLayer> device_layers;
+	device_layers.reserve(layers.size());
+
+	for (const auto& layer : layers) {
+		float* device_weights;
+		float* device_bias;
+
+		cudaMalloc(&device_weights, sizeof(float) * layer.neuronsIn * layer.neuronsOut);
+		cudaMalloc(&device_bias, sizeof(float) * layer.neuronsOut);
+
+		cudaMemcpy(device_weights, layer.weights, sizeof(float) * layer.neuronsIn * layer.neuronsOut, cudaMemcpyHostToDevice);
+		cudaMemcpy(device_bias, layer.bias, sizeof(float) * layer.neuronsOut, cudaMemcpyHostToDevice);
+
+		RawLayer device_layer;
+		device_layer.weights = device_weights;
+		device_layer.bias = device_bias;
+		device_layer.neuronsIn = layer.neuronsIn;
+		device_layer.neuronsOut = layer.neuronsOut;
+
+		device_layers.push_back(device_layer);
+	}
+
+	return device_layers;
+}
+
+float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, const int rows) {
 	assert(rows == layers[0].neuronsIn);
 	//assume this is a rowsx1 matrix for now 
 	
 	//copy weights and biases
 
+	std::vector<RawLayer> device_network = CUDA_LoadNetwork(layers);
+
+	float* device_vector;
+	cudaMalloc(&device_vector, sizeof(float) * rows);
+	cudaMemcpy(device_vector, vector, sizeof(float) * rows, cudaMemcpyHostToDevice);
+	
+	//TODO: Preallocate all the vectors to be stored for reuse so 0 allocations done on feedforward.
+
+	for (RawLayer layer : device_network) {
+		float* output;
+		//neuronsOut x neuronsIn
+		cudaMalloc(&output, sizeof(float) * layer.neuronsOut);
+		
+		cublasHandle_t handle;
+		cublasCreate_v2(&handle);
+
+
+		//w size = layer.neuronsOut * layer.neuronsIn
+		const int m = layer.neuronsOut;
+
+		//x size = layer.neuronsIn * 1
+		const int n = 1;
+		
+		//wx size = layer.neuronsOut * 1
+		const int k = layer.neuronsIn; 
+
+		float wx_scalar = 1.0f, c_scalar = 0.0f;
+
+		//w * x, as c = a * b where a is an mxk, b is a kxn and c is an mxn
+		cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &wx_scalar, layer.weights, layer.neuronsOut, device_vector, layer.neuronsIn, &c_scalar, output, layer.neuronsOut);
+
+		//now add bias and then apply activation
+		
+		addVector << <1, 256 >> > (layer.neuronsOut, layer.bias, output, output); //i hope aliasing isn't an issue.
+
+		applySigmoid << <1, 256 >> > (layer.neuronsOut, output);
+
+
+		//store result in device vector, free output so we can reues it next iteration
+		
+		cudaFree(device_vector);
+		cudaMalloc(&device_vector, sizeof(float) * layer.neuronsOut);
+		cudaMemcpy(device_vector, output, sizeof(float) * layer.neuronsOut, cudaMemcpyDeviceToDevice);
+		cudaFree(output);	
+	}
+
+	//result now stored in device_vector
+
+	float* result = new float[layers.back().neuronsIn * layers.back().neuronsOut];
+	cudaMemcpy(result, device_vector, sizeof(float) * layers.back().neuronsIn * layers.back().neuronsOut, cudaMemcpyDeviceToHost);
+	cudaFree(device_vector);
+	return result;
 
 
 }
@@ -140,7 +242,7 @@ void g() {
 
 	const float ab_scaler = 1.0f, c_scaler = 0.0f;
 
-	cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2, 3, 3, &ab_scaler, a, 2, b, 3, &c_scaler, c, 2);
+	cublasSgemm_v2(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2, 3, 3, &ab_scaler, a, 2, b, 3, &c_scaler, c, 2);
 
 	applyTanh << <1, 6 >> > (6, c);
 
