@@ -166,21 +166,56 @@ __global__ void sumRows(float* __restrict__ input, float* __restrict__  output, 
 }
 
 
-void GPUBackprop(float* device_matrices, const std::vector<Matrix>& biasMatrices,
-	const std::vector<Matrix>& biasErrors, const std::vector<Matrix>& weightErrors
+void GPUBackprop(std::vector<RawLayer>& layers, const std::vector<Matrix>& biasMatrices,
+	const std::vector<Matrix>& biasErrors, const std::vector<Matrix>& weightErrors,
+	int minibatchsize
 ) {
 	std::vector<Matrix> zs;
 	std::vector<Matrix> as;
 
+
+	cublasHandle_t handle;
 
 	std::vector<float*> deltas;
 
 	int deltaIdx = 0;
 
 	for (int layer = biasMatrices.size() - 2; layer >= 0; layer--) {
-		applySigmoidDerivative<<<1,1024>>>(zs[layer]); //sigma'
-		
+		float* weight_error_product;
+		cudaMalloc(&weight_error_product, -1);
 
+		layers[layer + 1].weights.transpose()* delta[deltaIdx];
+
+
+		float* delta;
+		cudaMalloc(&delta, sizeof(float) * layers[layer + 1].neuronsOut * layers[layer + 1].neuronsIn);
+
+		//c = a * b where a is an mxk, b is a kxn and c is an mxn
+		//a = weights
+		//b = delta[deltaIdx]
+					
+							//w^{l+1}^T  //delta remains non transposed
+
+		const float alpha = 1.0f;
+		const float beta = 0.0f;
+		//delta is a vector, well actually no its not given that i have a matrix so what is k, mini bathc size?
+		//yes
+		cublasSgemm_v2(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+			//m,n,k
+			layers[layer+1].neuronsOut, minibatchsize, layers[layer+1].neuronsIn,
+		&alpha, layers[layer+1].weights, layers[layer+1].neuronsOut,
+			deltas[deltaIdx], minibatchsize, &beta,
+			delta, layers[layer + 1].neuronsOut
+		); //:vomit_emoji:
+
+		applySigmoidDerivative<<<1,1024>>>(zs[layer]); //sigma'
+
+		float* delta;
+		cudaMalloc(&delta, sizeof(float) * zs[layer].rows);
+		
+		sumRows<<<1,500>>>(zs[layer].data, delta, zs[layer].rows, zs[layer].columns);
+
+		hamdardProduct<<<1,500>>>(zs[layer].rows, delta, weight_error_product, delta);
 
 		
 
