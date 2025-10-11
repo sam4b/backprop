@@ -41,7 +41,7 @@ int main() {
 	
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 
-	GPUTrain();
+	GPUTrain(train, { 28 * 28, 30, 10 });
 
 
 	return 0;

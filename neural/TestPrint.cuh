@@ -5,4 +5,5 @@
 #include <Eigen/Dense>
 #include <iostream>
 
-extern "C" void GPUTrain();
+extern "C" void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& data,
+	const std::vector<size_t>& networkLayout);

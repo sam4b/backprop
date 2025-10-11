@@ -24,7 +24,9 @@ __global__ void applySigmoidDerivative(int N, float* data) {
 	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= N) return;
 
-	data[idx] = sigmoidDerivative(m.data[idx]);
+	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * data[idx]));
+
+	data[idx] = sigmoid * (1.0f - sigmoid);
 }
 
 /*
@@ -100,13 +102,6 @@ __global__ void addVector(const int N, float* a, float* b, float* out) {
 	out[threadID] = a[threadID] + b[threadID];
 }
 
-//plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
-struct DeviceLayer {
-	DeviceMatrix weights;
-	DeviceMatrix bias;
-	int neuronsIn;
-	int neuronsOut;
-};
 
 /*
 	A thin wrapper around on-device (GPU) matrices.
@@ -117,7 +112,16 @@ struct DeviceMatrix {
 	int rows;
 };
 
-DeviceMatrix copy(DeviceMatrix& a) {
+//plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
+struct DeviceLayer {
+	DeviceMatrix weights;
+	DeviceMatrix bias;
+	int neuronsIn;
+	int neuronsOut;
+};
+
+
+DeviceMatrix copy(const DeviceMatrix& a) {
 	float* newData;
 	const size_t bytes = a.columns * a.rows * sizeof(float);
 
@@ -128,6 +132,8 @@ DeviceMatrix copy(DeviceMatrix& a) {
 	out.data = newData;
 	out.columns = a.columns;
 	out.rows = a.rows;
+
+	return out;
 }
 
 /*
@@ -146,7 +152,7 @@ void reuse(DeviceMatrix& a, const DeviceMatrix b) {
 void ApplyActivationDerivative(const DeviceMatrix a, DeviceMatrix& out) {
 	out = copy(a);
 
-	applySigmoidDerivative << <1, 1024 >> > (out);
+	applySigmoidDerivative << <1, 1024 >> > (out.rows * out.columns, out.data);
 }
 
 /*
@@ -185,7 +191,7 @@ void RowwiseSum(const DeviceMatrix in, DeviceMatrix& out) {
 }
 
 void ApplyActivationFunction(DeviceMatrix& a) {
-	applySigmoid << <1, 1024 >> > (a);
+	applySigmoid << <1, 1024 >> > (a.rows * a.columns, a.data);
 }
 
 
@@ -311,11 +317,10 @@ std::vector<DeviceLayer> CreateNetwork(const std::vector<size_t>& layout, Activa
 
 		float scale = 0.0f;
 		if (function == ActivationFunctionType::Sigmoid || function == ActivationFunctionType::Tanh || function == ActivationFunctionType::Identity) {
-			float scale = std::sqrt(2.0f / (neuronsIn + neuronsOut));
-
+			scale = std::sqrt(2.0f / (neuronsIn + neuronsOut));
 		}
 		else if (function == ActivationFunctionType::LeakyReLU) {
-			float scale = 2.0f / (float)neuronsIn;
+			scale = 2.0f / (float)neuronsIn;
 
 		}
 		else {
@@ -471,7 +476,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		weights.rows = layer.neuronsOut;
 		weights.columns = layer.neuronsIn;
 		cudaMalloc(&weights.data, weights.rows * weights.columns * sizeof(float));
-		cudaMemset(weights.data, weights.rows * weights.columns * sizeof(float));
+		cudaMemset(weights.data, 0, weights.rows * weights.columns * sizeof(float));
 
 		weightErrors.push_back(weights);
 	}
@@ -589,5 +594,5 @@ void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 
 	std::vector<DeviceLayer> network = CreateNetwork(networkLayout, ActivationFunctionType::Sigmoid);
 
-	CUDA_SGD(train, network, 0);
+	CUDA_SGD(train, network, 0, 30, 0.01f);
 }
