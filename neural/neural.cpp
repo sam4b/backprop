@@ -26,9 +26,6 @@ std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train
 }
 
 int main() {
-	g();
-
-	return 0;
 
 	const auto [train, validation] = createValidationSet(readLabelledData("C:\\Users\\Sam\\Downloads\\train-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\train-labels.idx1-ubyte"), 1000);
 	
@@ -44,6 +41,10 @@ int main() {
 	
 	const auto test = readLabelledData("C:\\Users\\Sam\\Downloads\\t10k-images.idx3-ubyte", "C:\\Users\\Sam\\Downloads\\t10k-labels.idx1-ubyte");
 
+	GPUTrain();
+
+
+	return 0;
 	const std::filesystem::path jsonPath = "C:/Users/Sam/Desktop/mynetwork.json";
 
 	std::cout << "Train or test? ";

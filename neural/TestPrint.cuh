@@ -5,3 +5,4 @@
 #include <Eigen/Dense>
 #include <iostream>
 
+extern "C" void GPUTrain();

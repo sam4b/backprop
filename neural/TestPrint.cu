@@ -298,7 +298,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	Creates a network according to the best weight initialisation for the given activation function.
 	Returns a vector<DeviceLayer>, consisting of all the layers loaded on device.
 */
-std::vector<DeviceLayer> CreateNetwork(const std::vector<int>& layout, ActivationFunctionType function) {
+std::vector<DeviceLayer> CreateNetwork(const std::vector<size_t>& layout, ActivationFunctionType function) {
 	std::vector<DeviceLayer> out;
 	out.reserve(layout.size());
 
@@ -400,10 +400,194 @@ DeviceMatrix GPUFeedForward(DeviceMatrix xs, const std::vector<DeviceLayer>& lay
 }
 
 
-void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingData, std::vector<DeviceLayer>& layers) {
+void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingData, std::vector<DeviceLayer>& layers,
+	const int randomState,
+	const int minibatchSize,
+	const float learningRate) {
 	
+	cublasHandle_t handle;
+	cublasCreate_v2(&handle);
+
+	assert(true);
+
 	//for now, assume the training data can fit in vram (todo: add streaming)
 	//actually, maybe i should just make the training data into two big matrices
 
+	//Generate indices to shuffle here, so we don't have to copy the training set.
+	std::vector<size_t> indices;
+	indices.reserve(trainingData.size());
+	for (int i = 0; i < trainingData.size(); i++) {
+		indices.push_back(i);
+	}
 
+	//indicies only contains elements in the range [0, trainingSet.size() - 1], and trainingSet remains constant - so indexing is safe.
+
+	std::mt19937 mersenne(randomState);
+	std::uniform_int_distribution<> sampler(0, trainingData.size() - 1);
+
+
+	/*
+		SAM: DO NOT FORGET TO MOVE THIS LATER.
+	*/
+	//Do this each iteration for updated biases
+	//Generate n_lxm augmented bias matrices (where n_l is the size of the neurons outputted by the l^th layer, m the mini batch size)
+
+	std::vector<DeviceMatrix> augmentedBiases;
+	augmentedBiases.reserve(layers.size());
+	for (const auto& layer : layers) {
+		DeviceMatrix bias;
+		
+		bias.rows = layer.neuronsOut;
+		bias.columns = minibatchSize;
+
+		const int bytes = bias.rows * bias.columns * sizeof(float);
+
+		cudaMalloc(&bias.data, bytes);
+		for (int i = 0; i < minibatchSize; i++) { //EVIL! (Loop for i = 0...m-1, copying. SHOULD be fine as column major order (probably slow though...)
+
+			const int offset = i * bias.rows; //move bias rows along each time
+			const int size = bias.rows * sizeof(float); //copy the vector once;
+			cudaMemcpy(bias.data + offset, layer.bias.data, size, cudaMemcpyDeviceToDevice);
+		}
+
+		augmentedBiases.push_back(bias);
+	}
+
+
+	std::vector<DeviceMatrix> biasErrors;
+	biasErrors.reserve(layers.size());
+	std::vector<DeviceMatrix> weightErrors;
+	weightErrors.reserve(layers.size());
+
+	for (const auto& layer : layers) {
+		DeviceMatrix bias;
+		bias.rows = layer.neuronsOut;
+		bias.columns = 1;
+		cudaMalloc(&bias.data, bias.rows * bias.columns * sizeof(float));
+		cudaMemset(bias.data, 0, bias.rows * bias.columns * sizeof(float));
+		biasErrors.push_back(bias);
+
+		DeviceMatrix weights;
+		weights.rows = layer.neuronsOut;
+		weights.columns = layer.neuronsIn;
+		cudaMalloc(&weights.data, weights.rows * weights.columns * sizeof(float));
+		cudaMemset(weights.data, weights.rows * weights.columns * sizeof(float));
+
+		weightErrors.push_back(weights);
+	}
+
+	const int no_epochs = 30;
+
+	for (int epoch = 0; epoch < no_epochs; epoch++) {
+		int batchPtr = 0;
+
+		for (int batch = 0; batch < trainingData.size() / minibatchSize; batch++) {
+			std::shuffle(indices.begin(), indices.end(), mersenne);
+
+			assert(biasErrors.size() == weightErrors.size());
+			for (int i = 0; i < biasErrors.size(); i++) {
+				cudaMemset(biasErrors[i].data, 0, biasErrors[i].columns * biasErrors[i].rows * sizeof(float));
+				cudaMemset(weightErrors[i].data, 0, weightErrors[i].columns * weightErrors[i].rows * sizeof(float));
+			}
+
+			//Create batch
+
+			DeviceMatrix xs;
+			xs.rows = trainingData[0].first.rows;
+			xs.columns = minibatchSize;
+			cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
+
+			DeviceMatrix ys;
+			ys.rows = trainingData[0].second.rows;
+			ys.columns = minibatchSize;
+			cudaMalloc(&xs.data, sizeof(float) * ys.rows * ys.columns);
+
+			for (int i = 0; i < minibatchSize; i++) {
+				assert(minibatchSize + i < trainingData.size());
+				//copy the (batchPtr + i)th input
+				cudaMemcpy(xs.data + (i * xs.rows), trainingData[minibatchSize + i].first.data, sizeof(float) * xs.rows * 1,
+					cudaMemcpyDeviceToDevice);
+
+				cudaMemcpy(ys.data + (i * ys.rows), trainingData[minibatchSize + i].second.data, sizeof(float) * ys.rows * 1,
+					cudaMemcpyDeviceToDevice);
+
+			}
+			batchPtr += minibatchSize;
+
+			GPUBackprop(xs, ys, layers, augmentedBiases, handle,
+				biasErrors, weightErrors);
+
+			//Update with noisy estimate
+
+			const float scalar = learningRate / (float)minibatchSize;
+
+			assert(layers.size() == biasErrors.size());
+			assert(biasErrors.size() == weightErrors.size());
+
+			for (int i = 0; i < layers.size(); i++) {
+				GPUScaleMat(biasErrors[i], biasErrors[i], scalar);
+				GPUScaleMat(weightErrors[i], weightErrors[i], scalar);
+
+				GPUSub(layers[i].bias, biasErrors[i], layers[i].bias);
+				GPUSub(layers[i].weights, weightErrors[i], layers[i].weights);
+			}
+
+			//Now, print to console how its going
+
+
+		}
+	}
+}
+
+std::pair<DeviceMatrix, DeviceMatrix> copyPair(const Eigen::VectorXf& x, const Eigen::VectorXf& y) {
+	DeviceMatrix x_device;
+	
+	const size_t x_bytes = x.rows() * x.cols() * sizeof(float);
+	cudaMalloc(&x_device.data, x_bytes);
+	cudaMemcpy(x_device.data, x.data() /*safe as eigen stores column-major, like cuBLAS, by default*/, x_bytes, cudaMemcpyHostToDevice);
+	x_device.rows = x.rows();
+	x_device.columns = x.cols();
+
+	DeviceMatrix y_device;
+
+	const size_t y_bytes = y.rows() * y.cols() * sizeof(float);
+	cudaMalloc(&y_device.data, y_bytes);
+	cudaMemcpy(y_device.data, y.data(), y_bytes, cudaMemcpyHostToDevice);
+	y_device.rows = y.rows();
+	y_device.columns = y.cols();
+
+	return { x_device, y_device };
+
+	
+}
+
+/*
+	Assumption: All training data can fit into the GPU VRAM. TODO: Add a streaming option.
+*/
+void CopyData(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& data,
+	std::vector<std::pair<DeviceMatrix, DeviceMatrix>>& out) {
+
+
+	out.reserve(data.size());
+	for (const auto& [x, y] : data) {
+		out.push_back(copyPair(x, y));
+	}
+}
+
+/*
+	Creates a neural network on the GPU (sigmoid activation function) and trains it on the data provided.
+*/
+void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& data, 
+	const std::vector<size_t>& networkLayout
+	) {
+
+	std::vector<std::pair<DeviceMatrix, DeviceMatrix>> train;
+	CopyData(data, train); //add random state later
+	std::cout << "Copied data successfully.\n";
+
+	assert(train.size() == data.size());
+
+	std::vector<DeviceLayer> network = CreateNetwork(networkLayout, ActivationFunctionType::Sigmoid);
+
+	CUDA_SGD(train, network, 0);
 }
