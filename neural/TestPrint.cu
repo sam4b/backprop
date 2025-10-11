@@ -505,7 +505,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			DeviceMatrix ys;
 			ys.rows = trainingData[0].second.rows;
 			ys.columns = minibatchSize;
-			cudaMalloc(&xs.data, sizeof(float) * ys.rows * ys.columns);
+			cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
 
 			for (int i = 0; i < minibatchSize; i++) {
 				assert(minibatchSize + i < trainingData.size());
