@@ -122,14 +122,26 @@ void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionTy
 */
 void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB, cublasHandle_t& handle
 	, DeviceMatrix* out) {
-	assert(a.columns == b.rows);
+	if (transposeA && !transposeB) {
+		assert(a.rows == b.rows);
+	}
+	else if (!transposeA && transposeB) {
+		assert(a.columns == b.columns);
+	}
+	else if (transposeA && transposeB) {
+		assert(a.rows == b.columns);
+	}
+	else {
+		assert(a.columns == b.rows);
+	}
+
+	const int m = transposeA ? a.columns : a.rows;
+	const int k = transposeA ? a.rows : a.columns;
+	const int n = transposeB ? b.rows : b.columns;
 
 	float* c;
-	cudaMalloc(&c, sizeof(float) * a.columns * a.rows);
+	cudaMalloc(&c, sizeof(float) * m * n);
 
-	const int m = a.rows;
-	const int n = b.columns;
-	const int k = a.columns;
 
 	out->data = c;
 	out->rows = m;
@@ -391,6 +403,8 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		cudaFree(zs_derivative.data);
 
 		ApplyActivationDerivative(zs[layer], zs_derivative, ActivationFunctionType::Sigmoid);
+		zs_derivative.rows = zs[layer].rows;
+		zs_derivative.columns = zs[layer].columns;
 
 		DeviceMatrix weight_error_product;
 		GPUMatMul(layers[layer + 1].weights, delta, true, false, handle,
@@ -504,6 +518,22 @@ DeviceMatrix GPUFeedForward(DeviceMatrix xs, const std::vector<DeviceLayer>& lay
 	}
 
 	return xs;
+}
+
+std::pair<int, int> maxElementWithIndex(float* data, int n) {
+	int max = INT_MIN;
+	assert(n > 0);
+
+	int idx = -1;
+
+	for (int i = 0; i < n; i++) {
+		if (data[i] >= max) {
+			idx = i;
+			max = data[i];
+		}
+	}
+
+	return { max, idx };
 }
 
 
@@ -641,8 +671,34 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 			//Now, print to console how its going
 
+			//For now, let's just measure the loss on a random sample of the training set. (not actually random, first 250 lol).
+			float* x_device = new float[10];
+			float* y_device = new float[10];
+			int count = 0;
+			for (int i = 0; i < 250; i++) {
+				DeviceMatrix x = GPUFeedForward(trainingData[i].first, layers, handle);
+				DeviceMatrix y = trainingData[i].second;
 
+				cudaMemcpy(x_device, x.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(y_device, y.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+
+				const auto [x_max, x_idx] = maxElementWithIndex(x_device, 10);
+				const auto [y_max, y_idx] = maxElementWithIndex(y_device, 10);
+
+				if (y_idx == x_idx) count++;
+
+
+			}
+
+			float percent_correct = ((float)count) * 100.0f / 250.0f;
+
+			std::cout << "Mini batch complete, got: " << percent_correct << "% accuracy.\n";
+
+			delete[] x_device;
+			delete[] y_device;
 		}
+
+
 	}
 }
 
