@@ -1,107 +1,6 @@
 #include "TestPrint.cuh"
 #include "Network.hpp"
 
-__global__ void f() {
-	const int threadId = threadIdx.x + blockIdx.x * blockDim.x;
-	printf("Thread ID: %i.\n", threadId);
-}
-
-__device__ float tanhImplementation(const float x) {
-	return (expf(x) - expf(-1.0f * x)) / (expf(x) + expf(-1.0f * x));
-}
-
-/*
-	c = a . b
-*/
-__global__ void hamdardProduct(int N, float* a, float* b, float* c) {
-	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx >= N) return;
-
-	c[idx] = a[idx] * b[idx];
-}
-
-__global__ void applySigmoidDerivative(int N, float* data) {
-	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx >= N) return;
-
-	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * data[idx]));
-
-	data[idx] = sigmoid * (1.0f - sigmoid);
-}
-
-/*
-	Map a nxm matrix -> nx1 vector by summing rowwise (see: Eigen MatrixXf::rowwise()::sum())
-*/
-__global__ void sumRows(float* __restrict__ input, float* __restrict__  output, int N, int M) {
-	int x = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (x >= N) return;
-
-	float sum = 0.0f;
-	for (int i = 0; i < M; i++) {
-		sum += input[x + i * N]; //column major storage in eigen and cuda
-	}
-
-	output[x] = sum;
-}
-
-/*
-	C = A + B
-
-	rows(A) = rows(B), cols(A) = cols(B), or undefined behaviour.
-*/
-__global__ void addMatrices(float* a, float* b, int N, float* c) {
-	int threadId = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (threadId >= N) return;
-
-	c[threadId] = a[threadId] + b[threadId];
-}
-
-__global__ void multiplyInPlace(float* a, float scalar, int N) {
-	int threadId = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (threadId >= N) return;
-
-	a[threadId] *= scalar;
-}
-
-
-__device__ float sigmoidImplementation(const float x) {
-	return (1.0f / (1.0f + expf(-1.0f * x)));
-}
-
-__global__ void applyTanh(const int N, float* data) {
-	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (threadID >= N) {
-		return;
-	}
-
-	data[threadID] = tanhImplementation(data[threadID]);
-	
-}
-
-__global__ void applySigmoid(const int N, float* data) {
-	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (threadID >= N) {
-		return;
-	}
-
-	data[threadID] = sigmoidImplementation(data[threadID]);
-}
-
-__global__ void addVector(const int N, float* a, float* b, float* out) {
-	const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (threadID >= N) {
-		return;
-	}
-
-	out[threadID] = a[threadID] + b[threadID];
-}
-
 
 /*
 	A thin wrapper around on-device (GPU) matrices.
@@ -146,13 +45,91 @@ void reuse(DeviceMatrix& a, const DeviceMatrix b) {
 
 	cudaMalloc(&a.data, bytes);
 
+	a.rows = b.rows;
+	a.columns = b.columns;
 	cudaMemcpy(a.data, b.data, bytes, cudaMemcpyDeviceToDevice);
 }
 
-void ApplyActivationDerivative(const DeviceMatrix a, DeviceMatrix& out) {
+
+/*
+	No aliasing guarantees with the next two kernels.
+*/
+
+__global__ ApplySigmoid(DeviceMatrix in, DeviceMatrix out) {
+	const int row = blockIdx.y * blockDim.y + threadIdx.y;
+	const int col = blockIdx.x * blockDim.x + threadIdx.x; 
+
+	const int idx = row * in.columns + col;
+
+	if (idx >= in.rows * in.columns) return;
+	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in[idx]));
+}
+
+__global__ ApplySigmoidDerivative(DeviceMatrix in, DeviceMatrix out) {
+	const int row = blockIdx.y * blockDim.y + threadIdx.y;
+	const int col = blockIdx.x * blockDim.x + threadIdx.x;  
+
+	const int idx = row * in.columns + col;
+
+	if (idx >= in.rows * in.columns) return;
+
+	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in[idx]));
+
+	out[idx] = (1.0f - sigmoid) * sigmoid;
+}
+
+
+void ApplyActivation(const DeviceMatrix a, DeviceMatrix& out, const ActivationFunctionType type) {
 	out = copy(a);
 
-	applySigmoidDerivative << <1, 1024 >> > (out.rows * out.columns, out.data);
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	ApplySigmoid << <blockDim, gridDim >> > (a, out);
+
+}
+
+void ApplyActivationDerivative(const DeviceMatrix a, DeviceMatrix& out, const ActivationFunctionType) {
+	out = copy(a);
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	ApplySigmoidDerivative << <blockDim, gridDim >> > (a, out);
+}
+
+
+void ApplyActivationInPlace(DeviceMatrix a, const ActivationFunctionType type) {
+	assert(type == ActivationFunctionType::Sigmoid && "Only sigmoid supported atm");
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+
+
+	ApplySigmoid <<<blockDim, gridDim>>>>(a, a);
+}
+
+void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionType type) {
+	assert(type == ActivationFunctionType::Sigmoid && "Only sigmoid supported atm");
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+
+	ApplySigmoidDerivative <<<blockDim, gridDim>>>(a, a);
 }
 
 /*
@@ -185,32 +162,171 @@ void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB,
 
 }
 
+/*
+	Map a nxm matrix -> nx1 vector by summing rowwise (see: Eigen MatrixXf::rowwise()::sum())
+	input CANNOT alias output (regardless, why would you sum the rows of an nx1 matrix into an nx1 anyway?)
+*/
+__global__ void sumRows(float* __restrict__ input, float* __restrict__  output, int N, int M) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
 
+	if (x >= N) return;
+
+	float sum = 0.0f;
+	for (int i = 0; i < M; i++) {
+		sum += input[x + i * N]; //column major storage in eigen and cuda
+	}
+
+	output[x] = sum;
+}
+
+
+/*
+	OUT MUST NOT ALIAS IN
+*/
 void RowwiseSum(const DeviceMatrix in, DeviceMatrix& out) {
+	int threadsPerBlock = 256;                    
+	int blocksPerGrid = (in.rows + threadsPerBlock - 1) / threadsPerBlock;
 
+	sumRows << <blocksPerGrid, threadsPerBlock >> > (input, out, in.rows, in.columns);
 }
 
-void ApplyActivationFunction(DeviceMatrix& a) {
-	applySigmoid << <1, 1024 >> > (a.rows * a.columns, a.data);
+
+__global__ void HammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
+	int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (row < a.rows && col < a.columns) {
+		int index = row * a.columns + col; //check this is correct
+		result.data[index] = a.data[index] * b.data[index];
+	}
+}
+
+/*
+	Result may not alias A or B. This gets thrown into a new output matrix.
+*/
+void GPUHammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result) {
+	assert(a.rows == b.rows);
+	assert(a.columns == b.columns);
+
+	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+	result.rows = a.rows;
+	result.columns = a.columns;
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x, 
+		(a.rows + blockDim.y - 1) / blockDim.y  
+	);
+
+
+	HammardProduct <<<blockDim, gridDim >> > (a, b, result);
+}
+
+/*
+	C = A + B
+	(C may alias A or B)
+*/
+__global__ void AddMatrix(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, float alpha,
+	float beta) {
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
+	int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+	const int idx = row * a.columns + col;
+
+	if (idx >= a.columns * a.rows) return;
+
+	c[idx] = a[idx] * alpha + beta * b[idx];
+}
+
+/*
+	C = alpha * A + beta * b.
+	C MUST NOT ALIAS A OR B.
+*/
+void GPUAdd(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result, float alpha, float beta) {
+	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+	result.rows = a.rows;
+	result.columns = a.columns;
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	AddMatrix << <blockDim, gridDim >> > (a, b, result, alpha, beta);
+}
+
+__global__ void AddMatrixInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
+	const int row = blockIdx.y * blockDim.y + threadIdx.y;
+	const int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+	const int idx = row * a.columns + col;
+
+	b[idx] = (alpha * a[idx]) + (beta * b[idx]);
+}
+
+/*
+	C = alpha * A + beta * B
+	C is emplaced in B.
+*/
+void GPUAddInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	AddMatrixInPlace << <blockDim, gridDim >> > (a, b, result, alpha, beta);
+}
+
+__global__ void ScaleMatrix(DeviceMatrix a, DeviceMatrix b, float scalar) {
+	const int row = blockIdx.y * blockDim.y + threadIdx.y;
+	const int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+	const int idx = row * a.columns + col;
+
+	if (idx >= a.columns * a.rows) return;
+
+	b[idx] = scalar * a[idx];
+
+}
+void GPUScaleMat(DeviceMatrix a, DeviceMatrix& result, float scalar) {
+	result.rows = a.rows;
+	result.columns = a.columns;
+
+	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	ScaleMatrix << <blockDim, gridDim >> > (a, b, scalar);
 }
 
 
-void GPUHammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+__global__ void ScaleMatrixInPlace(DeviceMatrix a, float scalar) {
+	const int row = blockIdx.y * blockDim.y + threadIdx.y;
+	const int col = blockIdx.x * blockDim.x + threadIdx.x;
 
+	const int idx = row * a.columns + col;
+
+	if (idx >= a.columns * a.rows) return;
+
+	a[idx] = scalar * a[idx];
 }
 
-void GPUAdd(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+void GPUScaleMatInPlace(DeviceMatrix a, float scalar) {
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
 
+	ScaleMatrix << <blockDim, gridDim >> > (a, scalar);
 }
-
-void GPUSub(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
-
-}
-
-void GPUScaleMat(DeviceMatrix a, DeviceMatrix result, float scalar) {
-
-}
-
 
 
 /*
@@ -254,8 +370,8 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		DeviceMatrix bias = augmentedBiases[layer];
 
 		DeviceMatrix z;
-		GPUMatMul(layers[layer].weights, layers[layer].bias, false, false, handle, &z);
-
+		GPUMatMul(layers[layer].weights, xs, false, false, handle, &z);
+		GPUAdd(z, bias, z);
 		zs.push_back(z);
 
 		DeviceMatrix a = copy(z);
@@ -268,7 +384,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 	//Compute the error at the Lth layer
 	DeviceMatrix cost_derivative;
-	GPUSub(xs, ys, cost_derivative);
+	GPUAdd(xs, ys, cost_derivative, 1.0f, 1.0f);
 
 	DeviceMatrix zs_derivative;
 	ApplyActivationDerivative(zs.back(), zs_derivative);
