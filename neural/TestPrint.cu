@@ -62,7 +62,7 @@ struct DeviceMatrix {
 	int rows;
 };
 
-DeviceMatrix copy(DeviceMatrix a) {
+DeviceMatrix copy(DeviceMatrix& a) {
 	float* newData;
 	const size_t bytes = a.columns * a.rows * sizeof(float);
 
@@ -78,7 +78,7 @@ DeviceMatrix copy(DeviceMatrix a) {
 /*
 	Memory mgmt: free a and copy b into it
 */
-void reuse(DeviceMatrix a, const DeviceMatrix b) {
+void reuse(DeviceMatrix& a, const DeviceMatrix b) {
 	cudaFree(a.data);
 
 	const size_t bytes = b.columns * b.rows * sizeof(float);
@@ -88,6 +88,20 @@ void reuse(DeviceMatrix a, const DeviceMatrix b) {
 	cudaMemcpy(a.data, b.data, bytes, cudaMemcpyDeviceToDevice);
 }
 
+void ApplyActivationDerivative(const DeviceMatrix a, DeviceMatrix& out) {
+	out = copy(a);
+
+	applySigmoidDerivative << <1, 1024 >> > (out);
+}
+
+
+void RowwiseSum(const DeviceMatrix in, DeviceMatrix& out) {
+
+}
+
+void ApplyActivationFunction(DeviceMatrix& a) {
+	applySigmoid << <1, 1024 >> > (a);
+}
 
 /*
 	xs : the inputs of the mini batch
@@ -109,10 +123,12 @@ void reuse(DeviceMatrix a, const DeviceMatrix b) {
 
 	cublasHandle_t : the handle for cublas 
 */
-void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys
+void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	const std::vector<RawLayer>& layers,
 	const std::vector<DeviceMatrix>& augmentedBiases,
-	cublasHandle_t& handle) {
+	cublasHandle_t& handle,
+	std::vector<DeviceMatrix>& biasErrors,
+	std::vector<DeviceMatrix>& weightErrors) {
 	std::vector<DeviceMatrix> zs; //weighted sums
 	std::vector<DeviceMatrix> as;
 
@@ -133,7 +149,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys
 		zs.push_back(z);
 
 		DeviceMatrix a = copy(z);
-		applySigmoid << <1, 1024 >> > (a);
+		ApplyActivationFunction(a);
 
 		as.push_back(a);
 
@@ -144,7 +160,31 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys
 	DeviceMatrix cost_derivative;
 	GPUSub(xs, ys, cost_derivative);
 
+	DeviceMatrix zs_derivative;
+	ApplyActivationDerivative(zs.back(), zs_derivative);
 
+	DeviceMatrix delta;
+	GPUHammardProduct(cost_derivative, zs_derivative, delta);
+
+	RowwiseSum(delta, biasErrors.back());
+
+	GPUMatMul(delta, as[as.size() - 2], false, true, handle,
+		&weightErrors.back());
+
+	for (int layer = layers.size() - 2; layer >= 0; layer--) {
+		cudaFree(zs_derivative.data);
+
+		ApplyActivationDerivative(zs[layer], zs_derivative);
+
+		DeviceMatrix weight_error_product;
+		GPUMatMul(layers[layer + 1].weights, delta, true, false, handle,
+			&weight_error_product);
+
+		GPUHammardProduct(zs_derivative, weight_error_product, delta);
+
+		RowwiseSum(delta, biasErrors[layer]);
+		GPUMatMul(delta, as[layer], false, true, handle, &weightErrors[layer]);
+	}
 
 
 }
