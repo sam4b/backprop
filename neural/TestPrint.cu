@@ -55,17 +55,17 @@ void reuse(DeviceMatrix& a, const DeviceMatrix b) {
 	No aliasing guarantees with the next two kernels.
 */
 
-__global__ ApplySigmoid(DeviceMatrix in, DeviceMatrix out) {
+__global__ void ApplySigmoid(DeviceMatrix in, DeviceMatrix out) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x; 
 
 	const int idx = row * in.columns + col;
 
 	if (idx >= in.rows * in.columns) return;
-	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in[idx]));
+	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in.data[idx]));
 }
 
-__global__ ApplySigmoidDerivative(DeviceMatrix in, DeviceMatrix out) {
+__global__ void ApplySigmoidDerivative(DeviceMatrix in, DeviceMatrix out) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;  
 
@@ -73,9 +73,9 @@ __global__ ApplySigmoidDerivative(DeviceMatrix in, DeviceMatrix out) {
 
 	if (idx >= in.rows * in.columns) return;
 
-	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in[idx]));
+	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in.data[idx]));
 
-	out[idx] = (1.0f - sigmoid) * sigmoid;
+	out.data[idx] = (1.0f - sigmoid) * sigmoid;
 }
 
 
@@ -116,7 +116,7 @@ void ApplyActivationInPlace(DeviceMatrix a, const ActivationFunctionType type) {
 
 
 
-	ApplySigmoid <<<blockDim, gridDim>>>>(a, a);
+	ApplySigmoid <<<blockDim, gridDim>>>(a, a);
 }
 
 void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionType type) {
@@ -187,7 +187,7 @@ void RowwiseSum(const DeviceMatrix in, DeviceMatrix& out) {
 	int threadsPerBlock = 256;                    
 	int blocksPerGrid = (in.rows + threadsPerBlock - 1) / threadsPerBlock;
 
-	sumRows << <blocksPerGrid, threadsPerBlock >> > (input, out, in.rows, in.columns);
+	sumRows << <blocksPerGrid, threadsPerBlock >> > (in.data, out.data, in.rows, in.columns);
 }
 
 
@@ -235,7 +235,7 @@ __global__ void AddMatrix(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, float 
 
 	if (idx >= a.columns * a.rows) return;
 
-	c[idx] = a[idx] * alpha + beta * b[idx];
+	c.data[idx] = a.data[idx] * alpha + beta * b.data[idx];
 }
 
 /*
@@ -262,7 +262,7 @@ __global__ void AddMatrixInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, fl
 
 	const int idx = row * a.columns + col;
 
-	b[idx] = (alpha * a[idx]) + (beta * b[idx]);
+	b.data[idx] = (alpha * a.data[idx]) + (beta * b.data[idx]);
 }
 
 /*
@@ -276,9 +276,10 @@ void GPUAddInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	AddMatrixInPlace << <blockDim, gridDim >> > (a, b, result, alpha, beta);
+	AddMatrixInPlace << <blockDim, gridDim >> > (a, b, alpha, beta);
 }
 
+//No aliasing guarantees.
 __global__ void ScaleMatrix(DeviceMatrix a, DeviceMatrix b, float scalar) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -287,7 +288,7 @@ __global__ void ScaleMatrix(DeviceMatrix a, DeviceMatrix b, float scalar) {
 
 	if (idx >= a.columns * a.rows) return;
 
-	b[idx] = scalar * a[idx];
+	b.data[idx] = scalar * a.data[idx];
 
 }
 void GPUScaleMat(DeviceMatrix a, DeviceMatrix& result, float scalar) {
@@ -303,7 +304,7 @@ void GPUScaleMat(DeviceMatrix a, DeviceMatrix& result, float scalar) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ScaleMatrix << <blockDim, gridDim >> > (a, b, scalar);
+	ScaleMatrix << <blockDim, gridDim >> > (a, result, scalar);
 }
 
 
@@ -315,7 +316,7 @@ __global__ void ScaleMatrixInPlace(DeviceMatrix a, float scalar) {
 
 	if (idx >= a.columns * a.rows) return;
 
-	a[idx] = scalar * a[idx];
+	a.data[idx] = scalar * a.data[idx];
 }
 
 void GPUScaleMatInPlace(DeviceMatrix a, float scalar) {
@@ -325,7 +326,7 @@ void GPUScaleMatInPlace(DeviceMatrix a, float scalar) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ScaleMatrix << <blockDim, gridDim >> > (a, scalar);
+	ScaleMatrix << <blockDim, gridDim >> > (a, a, scalar);
 }
 
 
@@ -371,11 +372,11 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 		DeviceMatrix z;
 		GPUMatMul(layers[layer].weights, xs, false, false, handle, &z);
-		GPUAdd(z, bias, z);
+		GPUAddInPlace(z, bias, 1.0f, 1.0f);
 		zs.push_back(z);
 
 		DeviceMatrix a = copy(z);
-		ApplyActivationFunction(a);
+		ApplyActivationInPlace(a, ActivationFunctionType::Sigmoid);
 
 		as.push_back(a);
 
@@ -387,7 +388,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	GPUAdd(xs, ys, cost_derivative, 1.0f, 1.0f);
 
 	DeviceMatrix zs_derivative;
-	ApplyActivationDerivative(zs.back(), zs_derivative);
+	ApplyActivationDerivative(zs.back(), zs_derivative, ActivationFunctionType::Sigmoid);
 
 	DeviceMatrix delta;
 	GPUHammardProduct(cost_derivative, zs_derivative, delta);
@@ -400,7 +401,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
 		cudaFree(zs_derivative.data);
 
-		ApplyActivationDerivative(zs[layer], zs_derivative);
+		ApplyActivationDerivative(zs[layer], zs_derivative, ActivationFunctionType::Sigmoid);
 
 		DeviceMatrix weight_error_product;
 		GPUMatMul(layers[layer + 1].weights, delta, true, false, handle,
@@ -505,16 +506,12 @@ DeviceMatrix GPUFeedForward(DeviceMatrix xs, const std::vector<DeviceLayer>& lay
 		DeviceMatrix out;
 		GPUMatMul(layer.weights, xs, false, false, handle, &out); //Can I alias?
 		
-		cudaFree(xs.data);
-		xs = out;
-		out.data = nullptr;
-
-		GPUAdd(xs, layer.bias, out);
+		GPUAddInPlace(layer.bias, out, 1.0f, 1.0f);
 
 		cudaFree(xs.data);
 		xs = out;
 
-		ApplyActivationFunction(xs);
+		ApplyActivationInPlace(xs, ActivationFunctionType::Sigmoid);
 	}
 
 	return xs;
@@ -649,8 +646,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				GPUScaleMat(biasErrors[i], biasErrors[i], scalar);
 				GPUScaleMat(weightErrors[i], weightErrors[i], scalar);
 
-				GPUSub(layers[i].bias, biasErrors[i], layers[i].bias);
-				GPUSub(layers[i].weights, weightErrors[i], layers[i].weights);
+				GPUAddInPlace(layers[i].bias, biasErrors[i], 1.0f, -1.0f);
+				GPUAddInPlace(layers[i].weights, weightErrors[i], 1.0f, -1.0f);
 			}
 
 			//Now, print to console how its going
