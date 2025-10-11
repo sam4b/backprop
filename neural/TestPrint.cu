@@ -47,17 +47,107 @@ __global__ void addVector(const int N, float* a, float* b, float* out) {
 
 //plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
 struct RawLayer {
-	float* weights;
-	float* bias;
+	DeviceMatrix weights;
+	DeviceMatrix bias;
 	int neuronsIn;
 	int neuronsOut;
 };
 
-struct Matrix {
+/*
+	A thin wrapper around on-device (GPU) matrices.
+*/
+struct DeviceMatrix {
 	float* data;
 	int columns;
 	int rows;
 };
+
+DeviceMatrix copy(DeviceMatrix a) {
+	float* newData;
+	const size_t bytes = a.columns * a.rows * sizeof(float);
+
+	cudaMalloc(&newData, bytes);
+	cudaMemcpy(newData, a.data, bytes, cudaMemcpyDeviceToDevice);
+
+	DeviceMatrix out;
+	out.data = newData;
+	out.columns = a.columns;
+	out.rows = a.rows;
+}
+
+/*
+	Memory mgmt: free a and copy b into it
+*/
+void reuse(DeviceMatrix a, const DeviceMatrix b) {
+	cudaFree(a.data);
+
+	const size_t bytes = b.columns * b.rows * sizeof(float);
+
+	cudaMalloc(&a.data, bytes);
+
+	cudaMemcpy(a.data, b.data, bytes, cudaMemcpyDeviceToDevice);
+}
+
+
+/*
+	xs : the inputs of the mini batch
+
+	ys : the labels of the mini batch
+
+	augmentedBiases : a vector of matrices that consist of the
+	bias matrices for the l^th layer augmented with themselves
+	m times, where m is the mini batch size,
+	so we can do a matrix add for a mini batch
+
+	layers : the layers of the network
+
+	biasErrors : a vector of matrices that consist of the
+	errors for each bias vector
+
+	weightErrors : a vector of matrices that consist of the errors
+	for each weight matrix
+
+	cublasHandle_t : the handle for cublas 
+*/
+void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys
+	const std::vector<RawLayer>& layers,
+	const std::vector<DeviceMatrix>& augmentedBiases,
+	cublasHandle_t& handle) {
+	std::vector<DeviceMatrix> zs; //weighted sums
+	std::vector<DeviceMatrix> as;
+
+	as.push_back(copy(xs));
+
+	int biasIdx = 0; 
+
+	assert(xs.data);
+	assert(augmentedBiases.size() > 0);
+	assert(layers.size() == augmentedBiases.size());
+
+	for (int layer = 0; layer < layers.size(); layer++) {
+		DeviceMatrix bias = augmentedBiases[layer];
+
+		DeviceMatrix z;
+		GPUMatMul(layers[layer].weights, layers[layer].bias, false, false, handle, &z);
+
+		zs.push_back(z);
+
+		DeviceMatrix a = copy(z);
+		applySigmoid << <1, 1024 >> > (a);
+
+		as.push_back(a);
+
+		reuse(xs, a);
+	}
+
+	//Compute the error at the Lth layer
+	DeviceMatrix cost_derivative;
+	GPUSub(xs, ys, cost_derivative);
+
+
+
+
+}
 
 
 std::vector<RawLayer> createNetwork(const std::vector<int>& layout, ActivationFunctionType function) {
@@ -142,11 +232,11 @@ __global__ void hamdardProduct(int N, float* a, float* b, float* c) {
 	c[idx] = a[idx] * b[idx];
 }
 
-__global__ void applySigmoidDerivative(Matrix m) {
+__global__ void applySigmoidDerivative(int N, float* data) {
 	const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx >= m.rows * m.columns) return;
+	if (idx >= N) return;
 
-	//m.data[idx] = sigmoidDerivative(m.data[idx]);
+	data[idx] = sigmoidDerivative(m.data[idx]);
 }
 
 /*
@@ -165,16 +255,241 @@ __global__ void sumRows(float* __restrict__ input, float* __restrict__  output, 
 	output[x] = sum;
 }
 
+/*
+	C = A + B
 
-void GPUBackprop(std::vector<RawLayer>& layers, const std::vector<Matrix>& biasMatrices,
-	const std::vector<Matrix>& biasErrors, const std::vector<Matrix>& weightErrors,
-	int minibatchsize
+	rows(A) = rows(B), cols(A) = cols(B), or undefined behaviour.
+*/
+__global__ void addMatrices(float* a, float* b, int N, float* c) {
+	int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (threadId >= N) return;
+
+	c[threadId] = a[threadId] + b[threadId];
+}
+
+__global__ void multiplyInPlace(float* a, float scalar, int N) {
+	int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (threadId >= N) return;
+
+	a[threadId] *= scalar;
+}
+
+
+void GPUHammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+
+}
+
+void GPUAdd(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+
+}
+
+void GPUSub(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
+
+}
+
+void GPUScaleMat(DeviceMatrix a, DeviceMatrix result, float scalar) {
+
+}
+
+
+/*
+	Fills the matrix out with the data A * B (and likewise if A or B are transposed).
+	
+*/
+void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB, cublasHandle_t& handle
+, DeviceMatrix* out) {
+	assert(a.columns == b.rows);
+
+	float* c;
+	cudaMalloc(&c, sizeof(float) * a.columns * a.rows);
+
+	const int m = a.rows;
+	const int n = b.columns;
+	const int k = a.columns;
+
+	//(mxk)(kxn) = (mxn)
+
+	float alpha = 1.0f;
+	float beta = 0.0f;
+
+	//Even if A/B is transposed, give the number of rows for lda,ldb, ldc
+	cublasSgemm_v2(handle, (transposeA) ? CUBLAS_OP_T : CUBLAS_OP_N, (transposeB) ? CUBLAS_OP_T : CUBLAS_OP_N,
+		m, n, k,
+		&alpha, a.data, a.rows,
+		b.data, b.rows, &beta,
+		c, m);
+
+
+}
+
+/*
+	augmentedBias contains the bias vector (bx1) augmented with itself n times (bxn matrix) where n is the mini batch size
+*/
+void GPUBackprop(const std::vector<RawLayer>& layers, float* input, float* labels, const int minibatchsize,
+	cublasHandle_t handle, const std::vector<float*> augmentedBias
+	, std::vector<float*>& biasGradients, std::vector<float*>& weightGradients
+	) {
+	std::vector<DeviceMatrix> zs;
+	std::vector<DeviceMatrix> as;
+
+	DeviceMatrix mat;
+	mat.data = input;
+	mat.columns = minibatchsize;
+	mat.rows = 784;
+
+	as.push_back(mat);
+
+	//feed forward with data for later error
+	for (int i = 0; i < layers.size(); i++) {
+		//in: layers[i - 1].neuronsOut * miniBatchsize
+		//out: layers[i].neuronsOut * miniBatchSize
+
+		DeviceMatrix z = GPUMatMul(layers[i].weights, mat, false, false, handle);
+
+		//add bias to z in place
+		addMatrices << <1, 1024 >> >(z, augmentedBias[i], layers[i].neuronsOut, z);
+
+		//A lot of this is computable on the fly perhaps I don't need an abstraction...
+		DeviceMatrix zMat;
+		zMat.data = z;
+		zMat.rows = layers[i].neuronsOut;
+		zMat.columns = minibatchsize;
+
+
+		zs.push_back(zMat);
+		float* a;
+		cudaMalloc(&a, sizeof(float) * layers[i].neuronsOut * minibatchsize);
+		cudaMemcpy(a, z, sizeof(float) * layers[i].neuronsOut * minibatchsize, cudaMemcpyDeviceToDevice);
+
+		applySigmoid << <1, 1024 >> > (layers[i].neuronsOut * minibatchsize, a);
+
+		mat.data = a;
+		mat.rows = layers[i].neuronsOut;
+		mat.columns = minibatchsize;
+		
+		as.push_back(mat);
+	}
+
+	float* cost_derivative;
+	cudaMalloc(&cost_derivative, sizeof(float) * minibatchsize * layers.back().neuronsOut);
+
+	multiplyInPlace << <1, 1024 >> > (labels, -1.0f, layers.back().neuronsOut * minibatchsize);
+	addMatrices << <1, 1024 >> > (mat.data, labels, layers.back().neuronsOut * minibatchsize, cost_derivative);
+
+	float* delta = cost_derivative;
+
+	sumRows << <1, 1024 >> > (delta, biasGradients.back(), layers.back().neuronsOut, minibatchsize);
+	//mxk * kxn = mxn
+	//delta * as[as.size() - 2] (transposed)
+	//delta = (layers.back().neuronsOut x minibatchsize)
+	//as[as.size() - 2] = (layers[layers.size() - 2].neuronsOut x minibatchsize)^T = (minibatchsize, layers[layers.size() - 2].neuronsOut)
+	//m = layers.back().neuronsOut
+	//k = minibatchsize
+	//n = layers[layers.size() - 2].neuronsOut
+
+
+	const int m = layers.back().neuronsOut;
+	const int n = minibatchsize;
+	const int k = layers[layers.size() - 2].neuronsOut;
+
+	assert(layers[layers.size() - 2].neuronsOut == as[as.size() - 2].rows);
+
+	const float alpha = 1.0f;
+	const float beta = 0.0f;
+
+	cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+		m, n, k,
+		&alpha,
+		delta, m,
+		as[as.size() - 2].data, k,
+		&beta, weightGradients.back(), n);
+
+
+
+	for (int layer = layers.size() - 2; layer >= 0; layer--) {
+		const auto [m, n] = std::pair<int, int>{ zs[layer].rows, zs[layer].columns };
+
+		applySigmoidDerivative << < 1,1024>> > (m*n, zs[layer].data);
+
+
+	}
+
+	//Pool these later
+	cudaFree(delta);
+	for (const auto mat : as) {
+		cudaFree(mat.data);
+	}
+	for (const auto mat : zs) {
+		cudaFree(mat.data);
+	}
+
+
+	//Normal backprop recurrence for lth layer
+
+	for (int layer = layers.size() - 2; layer >= 0; layer--) {
+		const Eigen::MatrixXf zs_derivative = zs[layer].unaryExpr(derivativeMap.at(layers[layer].type));
+		const Eigen::MatrixXf weight_error_product = layers[layer + 1].weights.transpose() * delta;
+
+		delta = zs_derivative.cwiseProduct(weight_error_product);
+
+		biasErrors[layer] = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bia sfor this layer
+
+
+		//Collapse weightrows x (weightcols * batchsize) mat -> weightrows x weightcols mat by product of transpose.
+
+		weightErrors[layer] = delta * as[layer].transpose();
+
+
+	}
+}
+
+/*
+	biasMatrices contains the bias vector (bx1) augmented with itself n times (bxn matrix) where n is the mini batch size 
+*/
+void GPUBackprop(float* input, std::vector<RawLayer>& layers, const std::vector<DeviceMatrix>& biasMatrices,
+	const std::vector<DeviceMatrix>& biasErrors, const std::vector<DeviceMatrix>& weightErrors,
+	int minibatchsize, cublasHandle_t handle
 ) {
-	std::vector<Matrix> zs;
-	std::vector<Matrix> as;
+	std::vector<DeviceMatrix> zs;
+	std::vector<DeviceMatrix> as;
+
+	for (int i = 0; i < layers.size(); i++) {
+		float* z; //(neuronsOutxminibatchsize)
+		cudaMalloc(&z, sizeof(float) * layers[0].neuronsOut * minibatchsize);
+
+		
+		float* weights = layers[i].weights; //(neuronsOutxneuronsIn)
+
+		//input: (neuronsInxminibatchsize);
 
 
-	cublasHandle_t handle;
+		float alpha = 1.0f, beta = 0.0f;
+
+		const int m = layers[i].neuronsOut;
+		const int n = minibatchsize;
+		const int k = layers[i].neuronsIn;
+
+		//produces an mxn mat
+		cublasSgemm_v2(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+			m, n, k,
+			&alpha, weights, m,
+			input, k, &beta,
+			z, m);
+
+		//Now, wx. add bias next
+
+		addMatrices << <1, 1024 >> > (z, biasMatrices[i], neuronsOut * minibatchsize, z);
+
+		float* a;
+		cudaMalloc(&a, sizeof(float) * neuronsOut * minibatchsize);
+
+		applySigmoid<<<1, 1024>>>()
+		
+	}
+
+
 
 	std::vector<float*> deltas;
 
@@ -200,23 +515,17 @@ void GPUBackprop(std::vector<RawLayer>& layers, const std::vector<Matrix>& biasM
 		const float beta = 0.0f;
 		//delta is a vector, well actually no its not given that i have a matrix so what is k, mini bathc size?
 		//yes
+
+		const int m = layers[layer + 1].neuronsOut;
+		const int n = minibatchsize;
+		const int k = layers[layer + 1].neuronsIn;
+
+		//produces an mxn mat
 		cublasSgemm_v2(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-			//m,n,k
-			layers[layer+1].neuronsOut, minibatchsize, layers[layer+1].neuronsIn,
-		&alpha, layers[layer+1].weights, layers[layer+1].neuronsOut,
-			deltas[deltaIdx], minibatchsize, &beta,
-			delta, layers[layer + 1].neuronsOut
-		); //:vomit_emoji:
-
-		applySigmoidDerivative<<<1,1024>>>(zs[layer]); //sigma'
-
-		float* delta;
-		cudaMalloc(&delta, sizeof(float) * zs[layer].rows);
-		
-		sumRows<<<1,500>>>(zs[layer].data, delta, zs[layer].rows, zs[layer].columns);
-
-		hamdardProduct<<<1,500>>>(zs[layer].rows, delta, weight_error_product, delta);
-
+			m, n, k,
+			&alpha, layers[layer + 1].weights, m,
+			&delta[deltaIdx], k, &beta,
+			delta, m);
 		
 
 	}
@@ -289,7 +598,7 @@ float* CUDA_FeedForward(const std::vector<RawLayer>& layers, float* vector, cons
 
 }
 
-void CUDA_SGD(const std::vector<std::pair<Matrix, Matrix>> trainingData, std::vector<RawLayer>& layers) {
+void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingData, std::vector<RawLayer>& layers) {
 	
 	//for now, assume the training data can fit in vram (todo: add streaming)
 	//actually, maybe i should just make the training data into two big matrices
