@@ -36,22 +36,6 @@ DeviceMatrix copy(const DeviceMatrix& a) {
 }
 
 /*
-	Memory mgmt: free a and copy b into it
-*/
-void reuse(DeviceMatrix& a, const DeviceMatrix b) {
-	cudaFree(a.data);
-
-	const size_t bytes = b.columns * b.rows * sizeof(float);
-
-	cudaMalloc(&a.data, bytes);
-
-	a.rows = b.rows;
-	a.columns = b.columns;
-	cudaMemcpy(a.data, b.data, bytes, cudaMemcpyDeviceToDevice);
-}
-
-
-/*
 	No aliasing guarantees with the next two kernels.
 */
 
@@ -146,6 +130,10 @@ void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB,
 	const int m = a.rows;
 	const int n = b.columns;
 	const int k = a.columns;
+
+	out->data = c;
+	out->rows = m;
+	out->columns = n;
 
 	//(mxk)(kxn) = (mxn)
 
@@ -380,7 +368,8 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 		as.push_back(a);
 
-		reuse(xs, a);
+		cudaFree(xs.data);
+		xs = copy(a);
 	}
 
 	//Compute the error at the Lth layer
