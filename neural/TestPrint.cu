@@ -372,6 +372,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	assert(augmentedBiases.size() > 0);
 	assert(layers.size() == augmentedBiases.size());
 
+
 	for (int layer = 0; layer < layers.size(); layer++) {
 		DeviceMatrix bias = augmentedBiases[layer];
 
@@ -619,6 +620,22 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 	const int no_epochs = 30;
 
+
+	//Setup augmented biases (pool to avoid reallocating for each batch).
+
+	std::vector<DeviceMatrix> augmentedBiases;
+	augmentedBiases.reserve(layers.size());
+	for (const auto& layer : layers) {
+		DeviceMatrix bias;
+		bias.rows = layer.neuronsOut;
+		bias.columns = minibatchSize;
+
+		const int bytes = bias.rows * bias.columns * sizeof(float);
+
+		cudaMalloc(&bias.data, bytes);
+		augmentedBiases.push_back(bias);
+	}
+
 	for (int epoch = 0; epoch < no_epochs; epoch++) {
 		int batchPtr = 0;
 
@@ -632,28 +649,18 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			}
 
 
-//Do this each iteration for updated biases
-//Generate n_lxm augmented bias matrices (where n_l is the size of the neurons outputted by the l^th layer, m the mini batch size)
+			//Do this each iteration for updated biases
+			//Generate n_lxm augmented bias matrices (where n_l is the size of the neurons outputted by the l^th layer, m the mini batch size)
 
-			std::vector<DeviceMatrix> augmentedBiases;
-			augmentedBiases.reserve(layers.size());
-			for (const auto& layer : layers) {
-				DeviceMatrix bias;
+			assert(layers.size() == augmentedBiases.size());
+			for (int i = 0; i < layers.size(); i++) {
+				DeviceMatrix bias = augmentedBiases[i];
+				for (int j = 0; j < minibatchSize; j++) { //EVIL! (Loop for i = 0...m-1, copying. SHOULD be fine as column major order (probably slow though...)
 
-				bias.rows = layer.neuronsOut;
-				bias.columns = minibatchSize;
-
-				const int bytes = bias.rows * bias.columns * sizeof(float);
-
-				cudaMalloc(&bias.data, bytes);
-				for (int i = 0; i < minibatchSize; i++) { //EVIL! (Loop for i = 0...m-1, copying. SHOULD be fine as column major order (probably slow though...)
-
-					const int offset = i * bias.rows; //move bias rows along each time
+					const int offset = j * bias.rows; //move bias rows along each time
 					const int size = bias.rows * sizeof(float); //copy the vector once;
-					cudaMemcpy(bias.data + offset, layer.bias.data, size, cudaMemcpyDeviceToDevice);
+					cudaMemcpy(bias.data + offset, layers[i].bias.data, size, cudaMemcpyDeviceToDevice);
 				}
-
-				augmentedBiases.push_back(bias);
 			}
 
 			//Create batch
