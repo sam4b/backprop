@@ -491,9 +491,11 @@ std::vector<DeviceLayer> CreateNetwork(const std::vector<size_t>& layout, Activa
 /*
 	Returns a device matrix. Can easily be converted ot an Eigen::VectorXf/MatrixXf (dependent on whether you're batch processing or not).
 */
-DeviceMatrix GPUFeedForward(DeviceMatrix xs, const std::vector<DeviceLayer>& layers, cublasHandle_t& handle) {
+DeviceMatrix GPUFeedForward(const DeviceMatrix& in, const std::vector<DeviceLayer>& layers, cublasHandle_t& handle) {
 	assert(layers.size() >= 1);
-	assert(xs.columns = layers[0].neuronsIn);
+	
+	DeviceMatrix xs = copy(in);
+
 	assert(xs.columns != 0);
 	assert(xs.rows != 0);
 	assert(layers[0].neuronsIn != 0);
@@ -563,34 +565,6 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 	std::uniform_int_distribution<> sampler(0, trainingData.size() - 1);
 
 
-	/*
-		SAM: DO NOT FORGET TO MOVE THIS LATER.
-	*/
-	//Do this each iteration for updated biases
-	//Generate n_lxm augmented bias matrices (where n_l is the size of the neurons outputted by the l^th layer, m the mini batch size)
-
-	std::vector<DeviceMatrix> augmentedBiases;
-	augmentedBiases.reserve(layers.size());
-	for (const auto& layer : layers) {
-		DeviceMatrix bias;
-		
-		bias.rows = layer.neuronsOut;
-		bias.columns = minibatchSize;
-
-		const int bytes = bias.rows * bias.columns * sizeof(float);
-
-		cudaMalloc(&bias.data, bytes);
-		for (int i = 0; i < minibatchSize; i++) { //EVIL! (Loop for i = 0...m-1, copying. SHOULD be fine as column major order (probably slow though...)
-
-			const int offset = i * bias.rows; //move bias rows along each time
-			const int size = bias.rows * sizeof(float); //copy the vector once;
-			cudaMemcpy(bias.data + offset, layer.bias.data, size, cudaMemcpyDeviceToDevice);
-		}
-
-		augmentedBiases.push_back(bias);
-	}
-
-
 	std::vector<DeviceMatrix> biasErrors;
 	biasErrors.reserve(layers.size());
 	std::vector<DeviceMatrix> weightErrors;
@@ -627,18 +601,49 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				cudaMemset(weightErrors[i].data, 0, weightErrors[i].columns * weightErrors[i].rows * sizeof(float));
 			}
 
+
+//Do this each iteration for updated biases
+//Generate n_lxm augmented bias matrices (where n_l is the size of the neurons outputted by the l^th layer, m the mini batch size)
+
+			std::vector<DeviceMatrix> augmentedBiases;
+			augmentedBiases.reserve(layers.size());
+			for (const auto& layer : layers) {
+				DeviceMatrix bias;
+
+				bias.rows = layer.neuronsOut;
+				bias.columns = minibatchSize;
+
+				const int bytes = bias.rows * bias.columns * sizeof(float);
+
+				cudaMalloc(&bias.data, bytes);
+				for (int i = 0; i < minibatchSize; i++) { //EVIL! (Loop for i = 0...m-1, copying. SHOULD be fine as column major order (probably slow though...)
+
+					const int offset = i * bias.rows; //move bias rows along each time
+					const int size = bias.rows * sizeof(float); //copy the vector once;
+					cudaMemcpy(bias.data + offset, layer.bias.data, size, cudaMemcpyDeviceToDevice);
+				}
+
+				augmentedBiases.push_back(bias);
+			}
+
 			//Create batch
 
 			DeviceMatrix xs;
 			xs.rows = trainingData[0].first.rows;
 			xs.columns = minibatchSize;
-			cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
-
+			auto err = cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
+			if (err != cudaSuccess) {
+				std::cout << cudaGetErrorString(err);
+				assert(false);
+			}
 			DeviceMatrix ys;
 			ys.rows = trainingData[0].second.rows;
 			ys.columns = minibatchSize;
-			cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
-
+			err = cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
+			if (err != cudaSuccess) {
+				std::cout << cudaGetErrorString(err);
+				assert(false);
+			}
 			for (int i = 0; i < minibatchSize; i++) {
 				assert(minibatchSize + i < trainingData.size());
 				//copy the (batchPtr + i)th input
@@ -653,6 +658,9 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 			GPUBackprop(xs, ys, layers, augmentedBiases, handle,
 				biasErrors, weightErrors);
+
+			cudaFree(xs.data);
+			cudaFree(ys.data);
 
 			//Update with noisy estimate
 
@@ -669,6 +677,10 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				GPUAddInPlace(layers[i].weights, weightErrors[i], 1.0f, -1.0f);
 			}
 
+			for (auto& bias : augmentedBiases) {
+				cudaFree(bias.data);
+			}
+
 			//Now, print to console how its going
 
 			//For now, let's just measure the loss on a random sample of the training set. (not actually random, first 250 lol).
@@ -676,7 +688,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			float* y_device = new float[10];
 			int count = 0;
 			for (int i = 0; i < 250; i++) {
-				DeviceMatrix x = GPUFeedForward(trainingData[i].first, layers, handle);
+				const auto in = trainingData[i].first;
+				DeviceMatrix x = GPUFeedForward(in, layers, handle);
 				DeviceMatrix y = trainingData[i].second;
 
 				cudaMemcpy(x_device, x.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
@@ -687,7 +700,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 				if (y_idx == x_idx) count++;
 
-
+				cudaFree(x.data);
 			}
 
 			float percent_correct = ((float)count) * 100.0f / 250.0f;
