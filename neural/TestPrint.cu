@@ -544,6 +544,14 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 	const int minibatchSize,
 	const float learningRate) {
 	
+
+	//Creating our random sample for testing
+	constexpr int sampleSize = 250;
+	assert(trainingData.size() >= sampleSize);
+	std::vector<int> samples(trainingData.size());
+	std::iota(samples.begin(), samples.end(), 0);
+
+
 	cublasHandle_t handle;
 	cublasCreate_v2(&handle);
 
@@ -673,43 +681,47 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				GPUScaleMat(biasErrors[i], biasErrors[i], scalar);
 				GPUScaleMat(weightErrors[i], weightErrors[i], scalar);
 
-				GPUAddInPlace(layers[i].bias, biasErrors[i], 1.0f, -1.0f);
-				GPUAddInPlace(layers[i].weights, weightErrors[i], 1.0f, -1.0f);
+				GPUAddInPlace(biasErrors[i], layers[i].bias, -1.0f, 1.0f); //commutativity of addition is helpful
+				GPUAddInPlace(weightErrors[i], layers[i].weights, -1.0f, 1.0f);
 			}
 
 			for (auto& bias : augmentedBiases) {
 				cudaFree(bias.data);
 			}
 
-			//Now, print to console how its going
-
-			//For now, let's just measure the loss on a random sample of the training set. (not actually random, first 250 lol).
-			float* x_device = new float[10];
-			float* y_device = new float[10];
-			int count = 0;
-			for (int i = 0; i < 250; i++) {
-				const auto in = trainingData[i].first;
-				DeviceMatrix x = GPUFeedForward(in, layers, handle);
-				DeviceMatrix y = trainingData[i].second;
-
-				cudaMemcpy(x_device, x.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
-				cudaMemcpy(y_device, y.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
-
-				const auto [x_max, x_idx] = maxElementWithIndex(x_device, 10);
-				const auto [y_max, y_idx] = maxElementWithIndex(y_device, 10);
-
-				if (y_idx == x_idx) count++;
-
-				cudaFree(x.data);
-			}
-
-			float percent_correct = ((float)count) * 100.0f / 250.0f;
-
-			std::cout << "Mini batch complete, got: " << percent_correct << "% accuracy.\n";
-
-			delete[] x_device;
-			delete[] y_device;
+	
 		}
+
+
+		//Randomly sample sampleSize # of training examples to observe progress each epoch.
+		std::shuffle(samples.begin(), samples.end(), mersenne);
+		float* x_device = new float[10];
+		float* y_device = new float[10];
+		int count = 0;
+		for (int i = 0; i < sampleSize; i++) {
+			const int idx = samples[i];
+
+			const auto in = trainingData[idx].first;
+			DeviceMatrix x = GPUFeedForward(in, layers, handle);
+			DeviceMatrix y = trainingData[idx].second;
+
+			cudaMemcpy(x_device, x.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(y_device, y.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+
+			const auto [x_max, x_idx] = maxElementWithIndex(x_device, 10);
+			const auto [y_max, y_idx] = maxElementWithIndex(y_device, 10);
+
+			if (y_idx == x_idx) count++;
+
+			cudaFree(x.data);
+		}
+
+		float percent_correct = ((float)count) * 100.0f / 250.0f;
+
+		std::cout << "Epoch complete, got: " << percent_correct << "% accuracy.\n";
+
+		delete[] x_device;
+		delete[] y_device;
 
 
 	}
@@ -765,5 +777,5 @@ void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 
 	std::vector<DeviceLayer> network = CreateNetwork(networkLayout, ActivationFunctionType::Sigmoid);
 
-	CUDA_SGD(train, network, 0, 30, 0.01f);
+	CUDA_SGD(train, network, 0, 30, 3.0f);
 }
