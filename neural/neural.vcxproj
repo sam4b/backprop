@@ -147,10 +147,10 @@
     <ClInclude Include="Backpropagation.hpp" />
     <ClInclude Include="Layer.hpp" />
     <ClInclude Include="MNISTLoader.hpp" />
-    <ClInclude Include="TestPrint.cuh" />
+    <ClInclude Include="GPUNetwork.cuh" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="TestPrint.cu" />
+    <CudaCompile Include="GPUNetwork.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

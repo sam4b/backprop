@@ -1,4 +1,4 @@
-#include "TestPrint.cuh"
+#include "GPUNetworki bat.cuh"
 #include "Network.hpp"
 
 
@@ -442,6 +442,10 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	assert(layers.size() == augmentedBiases.size());
 
 
+	assert(memory.as[0].rows == xs.rows);
+	assert(memory.as[0].columns == xs.columns);
+	cudaMemcpy(memory.as[0].data, xs.data, sizeof(float) * xs.rows * xs.columns, cudaMemcpyDeviceToDevice);
+	cudaDeviceSynchronize();
 	for (int layer = 0; layer < layers.size(); layer++) {
 		DeviceMatrix bias = augmentedBiases[layer];
 
@@ -467,6 +471,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 
 		const size_t output_size = memory.zs[layer].columns * memory.zs[layer].rows * sizeof(float);
+		cudaDeviceSynchronize();
 		cudaMemcpy(memory.as[layer + 1].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
 		cudaMemcpy(memory.zs_derivatives[layer].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
 
@@ -890,7 +895,6 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			}
 		}
 
-		continue;
 		//Randomly sample sampleSize # of training examples to observe progress each epoch.
 		cudaDeviceSynchronize();
 		std::shuffle(samples.begin(), samples.end(), mersenne);

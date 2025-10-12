@@ -32,9 +32,9 @@
     <ClInclude Include="Backpropagation.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="TestPrint.cuh" />
+    <ClInclude Include="GPUNetwork.cuh" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="TestPrint.cu" />
+    <CudaCompile Include="GPUNetwork.cu" />
   </ItemGroup>
 </Project>

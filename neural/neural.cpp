@@ -1,7 +1,7 @@
 #include "Network.hpp"
 #include "MNISTLoader.hpp"
 #include <cuda_runtime.h>
-#include "TestPrint.cuh"
+#include "GPUNetwork.cuh"
 //Split test set into a validation and trainingSet
 //Returns: a pair {trainingSet, validationSet}
 std::pair<LabelledSet, LabelledSet> createValidationSet(const LabelledSet& train, const int validationCount) {
