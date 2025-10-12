@@ -43,17 +43,19 @@ __global__ void ApplySigmoid(DeviceMatrix in, DeviceMatrix out) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x; 
 
-	const int idx = row * in.columns + col;
+	const int idx = row + col * in.rows;
 
 	if (idx >= in.rows * in.columns) return;
 	const float sigmoid = 1.0f / (1.0f + expf(-1.0f * in.data[idx]));
+
+	out.data[idx] = sigmoid;
 }
 
 __global__ void ApplySigmoidDerivative(DeviceMatrix in, DeviceMatrix out) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;  
 
-	const int idx = row * in.columns + col;
+	const int idx = row + col * in.rows;
 
 	if (idx >= in.rows * in.columns) return;
 
@@ -72,7 +74,7 @@ void ApplyActivation(const DeviceMatrix a, DeviceMatrix& out, const ActivationFu
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ApplySigmoid << <blockDim, gridDim >> > (a, out);
+	ApplySigmoid << <gridDim, blockDim >> > (a, out);
 
 }
 
@@ -85,7 +87,7 @@ void ApplyActivationDerivative(const DeviceMatrix a, DeviceMatrix& out, const Ac
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ApplySigmoidDerivative << <blockDim, gridDim >> > (a, out);
+	ApplySigmoidDerivative << <gridDim, blockDim >> > (a, out);
 }
 
 
@@ -100,7 +102,7 @@ void ApplyActivationInPlace(DeviceMatrix a, const ActivationFunctionType type) {
 
 
 
-	ApplySigmoid <<<blockDim, gridDim>>>(a, a);
+	ApplySigmoid <<<gridDim, blockDim>>>(a, a);
 }
 
 void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionType type) {
@@ -113,7 +115,7 @@ void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionTy
 	);
 
 
-	ApplySigmoidDerivative <<<blockDim, gridDim>>>(a, a);
+	ApplySigmoidDerivative <<<gridDim, blockDim>>>(a, a);
 }
 
 /*
@@ -184,20 +186,21 @@ __global__ void sumRows(float* __restrict__ input, float* __restrict__  output, 
 	OUT MUST NOT ALIAS IN
 */
 void RowwiseSum(const DeviceMatrix in, DeviceMatrix& out) {
-	int threadsPerBlock = 256;                    
-	int blocksPerGrid = (in.rows + threadsPerBlock - 1) / threadsPerBlock;
+	int blockDim = 256;                    
+	int gridDim = (in.rows + blockDim - 1) / blockDim;
 
-	sumRows << <blocksPerGrid, threadsPerBlock >> > (in.data, out.data, in.rows, in.columns);
+	sumRows << <gridDim, blockDim >> > (in.data, out.data, in.rows, in.columns);
 }
 
 
 __global__ void HammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix result) {
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	const int idx = row + col * a.rows;
 
 	if (row < a.rows && col < a.columns) {
-		int index = row * a.columns + col; //check this is correct
-		result.data[index] = a.data[index] * b.data[index];
+		result.data[idx] = a.data[idx] * b.data[idx];
 	}
 }
 
@@ -219,7 +222,7 @@ void GPUHammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result) {
 	);
 
 
-	HammardProduct <<<blockDim, gridDim >> > (a, b, result);
+	HammardProduct <<<gridDim, blockDim >> > (a, b, result);
 }
 
 /*
@@ -231,7 +234,7 @@ __global__ void AddMatrix(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, float 
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-	const int idx = row * a.columns + col;
+	const int idx = row + col * a.rows;
 
 	if (idx >= a.columns * a.rows) return;
 
@@ -253,14 +256,16 @@ void GPUAdd(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result, float alpha, f
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	AddMatrix << <blockDim, gridDim >> > (a, b, result, alpha, beta);
+	AddMatrix << <gridDim, blockDim >> > (a, b, result, alpha, beta);
 }
 
 __global__ void AddMatrixInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-	const int idx = row * a.columns + col;
+	const int idx = row + col * a.rows;
+
+	if (idx >= a.rows * b.rows) return;
 
 	b.data[idx] = (alpha * a.data[idx]) + (beta * b.data[idx]);
 }
@@ -276,7 +281,7 @@ void GPUAddInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	AddMatrixInPlace << <blockDim, gridDim >> > (a, b, alpha, beta);
+	AddMatrixInPlace << <gridDim, blockDim >> > (a, b, alpha, beta);
 }
 
 //No aliasing guarantees.
@@ -284,7 +289,7 @@ __global__ void ScaleMatrix(DeviceMatrix a, DeviceMatrix b, float scalar) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-	const int idx = row * a.columns + col;
+	const int idx = row + col * a.rows;
 
 	if (idx >= a.columns * a.rows) return;
 
@@ -304,7 +309,7 @@ void GPUScaleMat(DeviceMatrix a, DeviceMatrix& result, float scalar) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ScaleMatrix << <blockDim, gridDim >> > (a, result, scalar);
+	ScaleMatrix << <gridDim, blockDim >> > (a, result, scalar);
 }
 
 
@@ -312,7 +317,7 @@ __global__ void ScaleMatrixInPlace(DeviceMatrix a, float scalar) {
 	const int row = blockIdx.y * blockDim.y + threadIdx.y;
 	const int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-	const int idx = row * a.columns + col;
+	const int idx = row + col * a.rows;
 
 	if (idx >= a.columns * a.rows) return;
 
@@ -326,7 +331,7 @@ void GPUScaleMatInPlace(DeviceMatrix a, float scalar) {
 		(a.rows + blockDim.y - 1) / blockDim.y
 	);
 
-	ScaleMatrix << <blockDim, gridDim >> > (a, a, scalar);
+	ScaleMatrix << <gridDim, blockDim >> > (a, a, scalar);
 }
 
 
@@ -362,7 +367,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	as.push_back(copy(xs));
 
 	int biasIdx = 0; 
-
+	
 	assert(xs.data);
 	assert(augmentedBiases.size() > 0);
 	assert(layers.size() == augmentedBiases.size());
@@ -372,7 +377,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 		DeviceMatrix z;
 		GPUMatMul(layers[layer].weights, xs, false, false, handle, &z);
-		GPUAddInPlace(z, bias, 1.0f, 1.0f);
+		GPUAddInPlace(bias, z, 1.0f, 1.0f);
 		zs.push_back(z);
 
 		DeviceMatrix a = copy(z);
@@ -380,13 +385,14 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 		as.push_back(a);
 
+		cudaDeviceSynchronize();
 		cudaFree(xs.data);
 		xs = copy(a);
 	}
 
 	//Compute the error at the Lth layer
-	DeviceMatrix cost_derivative;
-	GPUAdd(xs, ys, cost_derivative, 1.0f, 1.0f);
+	DeviceMatrix cost_derivative; //MSE: a^L - y
+	GPUAdd(xs, ys, cost_derivative, 1.0f, -1.0f);
 
 	DeviceMatrix zs_derivative;
 	ApplyActivationDerivative(zs.back(), zs_derivative, ActivationFunctionType::Sigmoid);
@@ -400,6 +406,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		&weightErrors.back());
 
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
+		cudaDeviceSynchronize();
 		cudaFree(zs_derivative.data);
 
 		ApplyActivationDerivative(zs[layer], zs_derivative, ActivationFunctionType::Sigmoid);
@@ -410,10 +417,24 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		GPUMatMul(layers[layer + 1].weights, delta, true, false, handle,
 			&weight_error_product);
 
+		cudaDeviceSynchronize();
+		cudaFree(delta.data);
 		GPUHammardProduct(zs_derivative, weight_error_product, delta);
 
 		RowwiseSum(delta, biasErrors[layer]);
 		GPUMatMul(delta, as[layer], false, true, handle, &weightErrors[layer]);
+	}
+
+	cudaDeviceSynchronize();
+
+	cudaFree(delta.data);
+
+	for (auto& a : as) {
+		cudaFree(a.data);
+	}
+
+	for (auto& z : zs) {
+		cudaFree(z.data);
 	}
 
 
@@ -513,6 +534,7 @@ DeviceMatrix GPUFeedForward(const DeviceMatrix& in, const std::vector<DeviceLaye
 		
 		GPUAddInPlace(layer.bias, out, 1.0f, 1.0f);
 
+		cudaDeviceSynchronize();
 		cudaFree(xs.data);
 		xs = out;
 
@@ -653,12 +675,12 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				assert(false);
 			}
 			for (int i = 0; i < minibatchSize; i++) {
-				assert(minibatchSize + i < trainingData.size());
+				assert(batchPtr + i < trainingData.size());
 				//copy the (batchPtr + i)th input
-				cudaMemcpy(xs.data + (i * xs.rows), trainingData[minibatchSize + i].first.data, sizeof(float) * xs.rows * 1,
+				cudaMemcpy(xs.data + (i * xs.rows), trainingData[batchPtr + i].first.data, sizeof(float) * xs.rows * 1,
 					cudaMemcpyDeviceToDevice);
 
-				cudaMemcpy(ys.data + (i * ys.rows), trainingData[minibatchSize + i].second.data, sizeof(float) * ys.rows * 1,
+				cudaMemcpy(ys.data + (i * ys.rows), trainingData[batchPtr + i].second.data, sizeof(float) * ys.rows * 1,
 					cudaMemcpyDeviceToDevice);
 
 			}
@@ -667,6 +689,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			GPUBackprop(xs, ys, layers, augmentedBiases, handle,
 				biasErrors, weightErrors);
 
+			cudaDeviceSynchronize();
 			cudaFree(xs.data);
 			cudaFree(ys.data);
 
@@ -685,6 +708,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				GPUAddInPlace(weightErrors[i], layers[i].weights, -1.0f, 1.0f);
 			}
 
+			cudaDeviceSynchronize();
 			for (auto& bias : augmentedBiases) {
 				cudaFree(bias.data);
 			}
@@ -713,6 +737,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 			if (y_idx == x_idx) count++;
 
+			cudaDeviceSynchronize();
 			cudaFree(x.data);
 		}
 
