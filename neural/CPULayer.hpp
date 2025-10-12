@@ -1,11 +1,31 @@
 #pragma once
-#include <Eigen/Dense>
-#include <nlohmann/json.hpp>
-#include <random>
+#include "Common.hpp"
 
+struct CPULayer {
+	Eigen::MatrixXf weights;
+	Eigen::VectorXf bias;
+	ActivationFunctionType type;
 
-//Xavier weight initialisation cuz sigmoid
-inline Layer createLayer(int neuronsIn, int neuronsOut, ActivationFunctionType type, const int randomState) {
+	nlohmann::json tojson() const {
+		nlohmann::json out;
+
+		out["weights"] = MatrixToJson(weights);
+		out["bias"] = VectorToJson(bias);
+		out["activation_function"] = static_cast<int>(type);
+		return out;
+	}
+
+	inline static CPULayer fromJson(const nlohmann::json& json) {
+		CPULayer out;
+		out.weights = JsonToMatrix(json["weights"]);
+		out.bias = JsonToVector(json["bias"]);
+		const int type = json["activation_function"];
+		assert(0 <= type <= ActivationFunctionType::Identity);
+		return out;
+	}
+};
+
+inline CPULayer createLayer(const int neuronsIn, const int neuronsOut, const ActivationFunctionType type) {
 	std::mt19937 gen(randomState);
 
 	Eigen::MatrixXf weights;

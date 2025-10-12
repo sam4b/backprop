@@ -21,6 +21,9 @@
     <ClCompile Include="Network.hpp">
       <Filter>Header Files</Filter>
     </ClCompile>
+    <ClCompile Include="INetwork.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Layer.hpp">
@@ -33,8 +36,23 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GPUNetwork.cuh" />
+    <ClInclude Include="INetwork.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CPULayer.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Common.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CPUNetwork.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="GPUNetwork.cu" />
+    <CudaCompile Include="MatrixKernels.cu">
+      <Filter>Source Files</Filter>
+    </CudaCompile>
   </ItemGroup>
 </Project>

@@ -140,17 +140,23 @@
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="INetwork.cpp" />
     <ClCompile Include="Network.hpp" />
     <ClCompile Include="neural.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Backpropagation.hpp" />
+    <ClInclude Include="Common.hpp" />
+    <ClInclude Include="CPULayer.hpp" />
+    <ClInclude Include="CPUNetwork.hpp" />
+    <ClInclude Include="INetwork.h" />
     <ClInclude Include="Layer.hpp" />
     <ClInclude Include="MNISTLoader.hpp" />
     <ClInclude Include="GPUNetwork.cuh" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="GPUNetwork.cu" />
+    <CudaCompile Include="MatrixKernels.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

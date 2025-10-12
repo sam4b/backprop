@@ -1,4 +1,5 @@
 #include "GPUNetwork.cuh"
+#include "INetwork.h"
 #include "Network.hpp"
 
 #define CUDA_TESTING_ON 1
@@ -24,27 +25,44 @@ std::cout << "cublas error: " << cublasGetStatusString(err);\
 assert(false);\
 }\
 }
-#else
 #define CUBLAS_WRAPPER(CUBLAS_CODE) CUBLAS_CODE;
 #endif
 
+
 /*
-	A thin wrapper around on-device (GPU) matrices.
+	This function TAKES OWNERSHIP of a. It proceeds to FREE a. If you wish to keep using a after calling this function,
+	call copy(a) first.
 */
-struct DeviceMatrix {
-	float* data;
-	int columns;
-	int rows;
-};
+Eigen::MatrixXf DeviceToEigen(DeviceMatrix a) {
+	Eigen::MatrixXf out(a.rows, a.columns);
 
-//plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
-struct DeviceLayer {
-	DeviceMatrix weights;
-	DeviceMatrix bias;
-	int neuronsIn;
-	int neuronsOut;
-};
+	const size_t bytes = a.rows * a.columns * sizeof(float);
 
+	CUDA_WRAPPER(cudaMemcpy(out.data(), a.data, bytes, cudaMemcpyDeviceToHost));
+	CUDA_WRAPPER(cudaDeviceSynchronize());
+	CUDA_WRAPPER(cudaFree(a.data));
+	return out;
+}
+
+
+
+/*
+	This function does not take ownership of a. Different semantics as Eigen::VectorXf has RAII.
+*/
+DeviceMatrix EigenToDevice(const Eigen::MatrixXf& a) {
+	DeviceMatrix out;
+	out.rows = a.rows();
+	out.columns = a.cols();
+
+	const size_t bytes = sizeof(float) * out.rows * out.columns;
+	CUDA_WRAPPER(cudaMalloc(&out.data, bytes));
+
+	//Eigen uses column-major too, so can just memcpy
+	CUDA_WRAPPER(cudaMemcpy(out.data, a.data(), bytes, cudaMemcpyHostToDevice));
+
+	return out;
+
+}
 
 DeviceMatrix copy(const DeviceMatrix& a) {
 	float* newData;
@@ -991,6 +1009,11 @@ void CopyData(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 		out.push_back(copyPair(x, y));
 	}
 }
+
+class GPUNetwork : public Network {
+public:
+	GPUNetwork()
+};
 
 /*
 	Creates a neural network on the GPU (sigmoid activation function) and trains it on the data provided.
