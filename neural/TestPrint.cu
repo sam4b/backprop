@@ -387,7 +387,9 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		as.push_back(a);
 
 		cudaDeviceSynchronize();
-		cudaFree(xs.data);
+		if (layer != 0) { //we don't own the input, we own everything after the input.
+			cudaFree(xs.data);
+		}
 		xs = copy(a);
 	}
 
@@ -632,8 +634,32 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		const int bytes = bias.rows * bias.columns * sizeof(float);
 
-		cudaMalloc(&bias.data, bytes);
+		auto err = cudaMalloc(&bias.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
 		augmentedBiases.push_back(bias);
+	}
+
+
+	//Pool xs and ys (size doesn't change / batch)
+
+	DeviceMatrix xs;
+	xs.rows = trainingData[0].first.rows;
+	xs.columns = minibatchSize;
+	auto err = cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
+	}
+	DeviceMatrix ys;
+	ys.rows = trainingData[0].second.rows;
+	ys.columns = minibatchSize;
+	err = cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
 	}
 
 	for (int epoch = 0; epoch < no_epochs; epoch++) {
@@ -664,25 +690,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			}
 
 			//Create batch
-
-			DeviceMatrix xs;
-			xs.rows = trainingData[0].first.rows;
-			xs.columns = minibatchSize;
-			auto err = cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
-			if (err != cudaSuccess) {
-				std::cout << cudaGetErrorString(err);
-				assert(false);
-			}
-			DeviceMatrix ys;
-			ys.rows = trainingData[0].second.rows;
-			ys.columns = minibatchSize;
-			err = cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
-			if (err != cudaSuccess) {
-				std::cout << cudaGetErrorString(err);
-				assert(false);
-			}
+			assert(batchPtr + minibatchSize < trainingData.size() && "Loop never goes out of bounds.");
 			for (int i = 0; i < minibatchSize; i++) {
-				assert(batchPtr + i < trainingData.size());
 				//copy the (batchPtr + i)th input
 				cudaMemcpy(xs.data + (i * xs.rows), trainingData[batchPtr + i].first.data, sizeof(float) * xs.rows * 1,
 					cudaMemcpyDeviceToDevice);
@@ -697,8 +706,6 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				biasErrors, weightErrors);
 
 			cudaDeviceSynchronize();
-			cudaFree(xs.data);
-			cudaFree(ys.data);
 
 			//Update with noisy estimate
 
@@ -714,20 +721,17 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 				GPUAddInPlace(biasErrors[i], layers[i].bias, -1.0f, 1.0f); //commutativity of addition is helpful
 				GPUAddInPlace(weightErrors[i], layers[i].weights, -1.0f, 1.0f);
 			}
-
-			cudaDeviceSynchronize();
-			for (auto& bias : augmentedBiases) {
-				cudaFree(bias.data);
-			}
-
-	
 		}
 
 
 		//Randomly sample sampleSize # of training examples to observe progress each epoch.
+		cudaDeviceSynchronize();
 		std::shuffle(samples.begin(), samples.end(), mersenne);
-		float* x_device = new float[10];
-		float* y_device = new float[10];
+
+		const size_t label_size = trainingData[0].second.rows; //For multi-class classification, we take the argmax of yhat and y 
+		//and make sure they're equal. For regression, MSE should be implemented.
+		float* x_device = new float[label_size];
+		float* y_device = new float[label_size];
 		int count = 0;
 		for (int i = 0; i < sampleSize; i++) {
 			const int idx = samples[i];
@@ -736,11 +740,12 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			DeviceMatrix x = GPUFeedForward(in, layers, handle);
 			DeviceMatrix y = trainingData[idx].second;
 
-			cudaMemcpy(x_device, x.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
-			cudaMemcpy(y_device, y.data, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			cudaMemcpy(x_device, x.data, label_size * sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(y_device, y.data, label_size * sizeof(float), cudaMemcpyDeviceToHost);
 
-			const auto [x_max, x_idx] = maxElementWithIndex(x_device, 10);
-			const auto [y_max, y_idx] = maxElementWithIndex(y_device, 10);
+			const auto [x_max, x_idx] = maxElementWithIndex(x_device, label_size);
+			const auto [y_max, y_idx] = maxElementWithIndex(y_device, label_size);
 
 			if (y_idx == x_idx) count++;
 
@@ -755,7 +760,13 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		delete[] x_device;
 		delete[] y_device;
 
+		//Free mini batch data.
+		cudaFree(xs.data);
+		cudaFree(ys.data);
 
+		for (auto& bias : augmentedBiases) {
+			cudaFree(bias.data);
+		}
 	}
 }
 
