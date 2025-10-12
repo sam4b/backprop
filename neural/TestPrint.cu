@@ -484,7 +484,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 	//Going backwards	
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
-		GPUMatMul(layers[layer + 1].weights, memory.deltas[layer], true, false, handle,
+		GPUMatMul(layers[layer + 1].weights, memory.deltas[layer + 1], true, false, handle,
 			&memory.weight_error_products[layer]);
 
 		//Hammard product being valid between zs_derivatives[layer] and weight_error_products[layer] implies 
@@ -756,12 +756,12 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		//dim (neuronsOutxneuronsIn);
 
-		const size_t bytes = sizeof(float) * neuronsIn * neuronsOut;
+		const size_t activation_size_bytes = sizeof(float) * neuronsOut * minibatchSize;
 
 		DeviceMatrix z;
 		z.rows = neuronsOut;
-		z.columns = neuronsIn;
-		err = cudaMalloc(&z.data, bytes);
+		z.columns = minibatchSize;
+		err = cudaMalloc(&z.data, activation_size_bytes);
 		if (err != cudaSuccess) {
 			std::cout << cudaGetErrorString(err);
 			assert(false);
@@ -771,7 +771,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		DeviceMatrix zs_derivative = z;
 		zs_derivative.data = nullptr; //just in case..
-		err = cudaMalloc(&zs_derivative.data, bytes);
+		err = cudaMalloc(&zs_derivative.data, activation_size_bytes);
 		if (err != cudaSuccess) {
 			std::cout << cudaGetErrorString(err);
 			assert(false);
@@ -781,7 +781,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		DeviceMatrix weight_error_product = z;
 		weight_error_product.data = nullptr; //just in case..
-		err = cudaMalloc(&weight_error_product.data, bytes);
+		err = cudaMalloc(&weight_error_product.data, activation_size_bytes);
 		if (err != cudaSuccess) {
 			std::cout << cudaGetErrorString(err);
 			assert(false);
@@ -791,8 +791,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		DeviceMatrix a;
 		a.rows = neuronsOut;
-		a.columns = neuronsIn;
-		err = cudaMalloc(&a.data, bytes);
+		a.columns = minibatchSize;
+		err = cudaMalloc(&a.data, activation_size_bytes);
 		if (err != cudaSuccess) {
 			std::cout << cudaGetErrorString(err);
 			assert(false);
@@ -805,12 +805,13 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		DeviceMatrix delta;
 		delta.rows = z.rows;
-		delta.columns = z.columns;
-		err = cudaMalloc(&delta.data, sizeof(float) * z.rows * z.columns);
+		delta.columns = minibatchSize;
+		err = cudaMalloc(&delta.data, activation_size_bytes);
 		if (err != cudaSuccess) {
 			std::cout << cudaGetErrorString(err);
 			assert(false);
 		}
+
 		deltas[layer] = delta;
 	}
 
