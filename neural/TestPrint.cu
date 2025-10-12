@@ -118,12 +118,8 @@ void ApplyActivationDerivativeInPlace(DeviceMatrix a, const ActivationFunctionTy
 	ApplySigmoidDerivative <<<gridDim, blockDim>>>(a, a);
 }
 
-/*
-	Fills the matrix out with the data A * B (and likewise if A or B are transposed).
 
-*/
-void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB, cublasHandle_t& handle
-	, DeviceMatrix* out) {
+void GPUMatMulPreAllocated(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, bool transposeA, bool transposeB, cublasHandle_t& handle) {
 	if (transposeA && !transposeB) {
 		assert(a.rows == b.rows);
 	}
@@ -141,14 +137,6 @@ void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB,
 	const int k = transposeA ? a.rows : a.columns;
 	const int n = transposeB ? b.rows : b.columns;
 
-	float* c;
-	cudaMalloc(&c, sizeof(float) * m * n);
-
-
-	out->data = c;
-	out->rows = m;
-	out->columns = n;
-
 	//(mxk)(kxn) = (mxn)
 
 	float alpha = 1.0f;
@@ -160,8 +148,28 @@ void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB,
 		&alpha, a.data, a.rows,
 		b.data, b.rows, &beta,
 		c, m);
+}
+/*
+	Fills the matrix out with the data A * B (and likewise if A or B are transposed).
+
+*/
+void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB, cublasHandle_t& handle
+	, DeviceMatrix* out) {
+	assert(out);
+
+	const int m = transposeA ? a.columns : a.rows;
+	const int k = transposeA ? a.rows : a.columns;
+	const int n = transposeB ? b.rows : b.columns;
+
+	float* c;
+	cudaMalloc(&c, sizeof(float) * m * n);
 
 
+	out->data = c;
+	out->rows = m;
+	out->columns = n;
+	
+	GPUMatMulPreAllocated(a, b, *out, transposeA, transposeB, handle);
 }
 
 /*
@@ -202,6 +210,23 @@ __global__ void HammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix resu
 	if (row < a.rows && col < a.columns) {
 		result.data[idx] = a.data[idx] * b.data[idx];
 	}
+}
+
+void GPUHammardProductToDest(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) {
+	assert(a.rows == b.rows);
+	assert(b.rows == c.rows);
+
+	assert(a.columns == b.columns);
+	assert(b.columns == c.columns);
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+
+	HammardProduct << <gridDim, blockDim >> > (a, b, c);
 }
 
 /*
@@ -275,6 +300,9 @@ __global__ void AddMatrixInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, fl
 	C is emplaced in B.
 */
 void GPUAddInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
+	assert(a.columns == b.columns);
+
+	assert(a.rows == b.rows);
 	dim3 blockDim(16, 16);
 	dim3 gridDim(
 		(a.columns + blockDim.x - 1) / blockDim.x,
@@ -282,6 +310,23 @@ void GPUAddInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, float beta) {
 	);
 
 	AddMatrixInPlace << <gridDim, blockDim >> > (a, b, alpha, beta);
+}
+
+
+void GPUAddInPlaceDestination(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, float alpha, float beta) {
+	assert(a.columns == b.columns);
+	assert(b.columns == c.columns);
+
+	assert(a.rows == b.rows);
+	assert(b.rows == c.rows);
+
+	dim3 blockDim(16, 16);
+	dim3 gridDim(
+		(a.columns + blockDim.x - 1) / blockDim.x,
+		(a.rows + blockDim.y - 1) / blockDim.y
+	);
+
+	AddMatrixInPlace << <gridDim, blockDim >> > (a, b, c, alpha, beta);
 }
 
 //No aliasing guarantees.
@@ -361,10 +406,70 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	cublasHandle_t& handle,
 	std::vector<DeviceMatrix>& biasErrors,
 	std::vector<DeviceMatrix>& weightErrors) {
+
+
+	/*
+		Pooled
+	*/
+	DeviceMatrix cost_derivative;
+	cost_derivative.columns = ys.columns;
+	cost_derivative.rows = ys.rows;
+	auto err = cudaMalloc(&cost_derivative.data, sizeof(float) * ys.columns * ys.rows);
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
+	}
+
+	DeviceMatrix zs_derivative;
+	zs_derivative.columns = ys.columns;
+	zs_derivative.rows = ys.rows;
+	auto err = cudaMalloc(&zs_derivative.data, sizeof(float) * ys.columns * ys.rows);
 	std::vector<DeviceMatrix> zs; //weighted sums
 	std::vector<DeviceMatrix> as;
 
-	as.push_back(copy(xs));
+	as.resize(layers.size() + 1);
+	zs.resize(layers.size());
+
+	as[0].rows = xs.rows;
+	as[0].columns = xs.columns;
+	auto err = cudaMalloc(&as[0].data, xs.rows * xs.columns * sizeof(float));
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
+	}
+
+
+	for (int layer = 0; layer < layers.size(); layer++) {
+		const int neuronsIn = layers[layer].neuronsIn;
+		const int neuronsOut = layers[layer].neuronsOut;
+
+		//dim (neuronsOutxneuronsIn);
+
+		const size_t bytes = sizeof(float) * neuronsIn * neuronsOut;
+
+		DeviceMatrix z;
+		z.rows = neuronsOut;
+		z.columns = neuronsIn;
+		auto err = cudaMalloc(&z.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		zs[layer] = z;
+
+		DeviceMatrix a;
+		a.rows = neuronsOut;
+		a.columns = neuronsIn;
+		auto err = cudaMalloc(&a.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		as[layer + 1] = a; //layer + 1 to account for putting the initial input into as.
+	}
+
 
 	int biasIdx = 0; 
 	
@@ -376,38 +481,47 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	for (int layer = 0; layer < layers.size(); layer++) {
 		DeviceMatrix bias = augmentedBiases[layer];
 
-		DeviceMatrix z;
-		GPUMatMul(layers[layer].weights, xs, false, false, handle, &z);
-		GPUAddInPlace(bias, z, 1.0f, 1.0f);
-		zs.push_back(z);
+		//as[0] = activation
+		//write into zs[0]
+		//write into as[0 + 1]
+		// 
+		//read as[1]
+		//write into zs[1]
+		//write into as[2]
 
-		DeviceMatrix a = copy(z);
-		ApplyActivationInPlace(a, ActivationFunctionType::Sigmoid);
+		//read as[2]
+		//write into zs[2]
+		//write into as[3]
 
-		as.push_back(a);
+		GPUMatMulPreAllocated(layers[layer].weights, as[layer], zs[layer], false, false,
+			handle);
 
-		cudaDeviceSynchronize();
-		if (layer != 0) { //we don't own the input, we own everything after the input.
-			cudaFree(xs.data);
-		}
-		xs = copy(a);
+		GPUAddInPlace(bias, zs[layer], 1.0f, 1.0f);
+
+		assert(zs[layer].columns == as[layer + 1].columns);
+		assert(zs[layer].rows == as[layer + 1].rows);
+
+		cudaMemcpy(as[layer + 1].data, zs[layer].data, zs[layer].columns * zs[layer].rows * sizeof(float), cudaMemcpyDeviceToDevice);
+
+		ApplyActivationInPlace(as[layer + 1], ActivationFunctionType::Sigmoid);
+
 	}
 
 	//Compute the error at the Lth layer
-	DeviceMatrix cost_derivative; //MSE: a^L - y
-	GPUAdd(xs, ys, cost_derivative, 1.0f, -1.0f);
-
-	DeviceMatrix zs_derivative;
+	GPUAddInPlaceDestination(as.back(), ys, cost_derivative, 1.0f, -1.0f); //a^L - y
 	ApplyActivationDerivative(zs.back(), zs_derivative, ActivationFunctionType::Sigmoid);
 
-	DeviceMatrix delta;
-	GPUHammardProduct(cost_derivative, zs_derivative, delta);
+	std::vector<DeviceMatrix> deltas;
+	deltas.resize(layers.size() - 1);
 
-	RowwiseSum(delta, biasErrors.back());
-
-	GPUMatMul(delta, as[as.size() - 2], false, true, handle,
+	GPUHammardProductToDest(cost_derivative, zs_derivative, deltas.back());
+	
+	//Write bias error and weight errors
+	RowwiseSum(deltas.back(), biasErrors.back());
+	GPUMatMul(deltas.back(), as[as.size() - 2], false, true, handle,
 		&weightErrors.back());
 
+	//Going backwards	
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
 		cudaDeviceSynchronize();
 		cudaFree(zs_derivative.data);
