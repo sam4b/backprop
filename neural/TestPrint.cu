@@ -420,15 +420,15 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		assert(false);
 	}
 
-	DeviceMatrix zs_derivative;
-	zs_derivative.columns = ys.columns;
-	zs_derivative.rows = ys.rows;
-	auto err = cudaMalloc(&zs_derivative.data, sizeof(float) * ys.columns * ys.rows);
 	std::vector<DeviceMatrix> zs; //weighted sums
-	std::vector<DeviceMatrix> as;
+	std::vector<DeviceMatrix> zs_derivatives;
+	std::vector<DeviceMatrix> as;	
+	std::vector<DeviceMatrix> weight_error_products;
 
 	as.resize(layers.size() + 1);
 	zs.resize(layers.size());
+	zs_derivatives.resize(layers.size());
+	weight_error_products.resize(layers.size());
 
 	as[0].rows = xs.rows;
 	as[0].columns = xs.columns;
@@ -457,6 +457,26 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		}
 
 		zs[layer] = z;
+
+		DeviceMatrix zs_derivative = z;
+		zs_derivative.data = nullptr; //just in case..
+		auto err = cudaMalloc(&zs_derivative.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		zs_derivatives[layer] = zs_derivative;
+
+		DeviceMatrix weight_error_product = z;
+		weight_error_product.data = nullptr; //just in case..
+		auto err = cudaMalloc(&weight_error_product.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		weight_error_products[layer] = weight_error_product;
 
 		DeviceMatrix a;
 		a.rows = neuronsOut;
@@ -501,20 +521,23 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		assert(zs[layer].columns == as[layer + 1].columns);
 		assert(zs[layer].rows == as[layer + 1].rows);
 
-		cudaMemcpy(as[layer + 1].data, zs[layer].data, zs[layer].columns * zs[layer].rows * sizeof(float), cudaMemcpyDeviceToDevice);
 
+		const size_t output_size = zs[layer].columns * zs[layer].rows * sizeof(float);
+		cudaMemcpy(as[layer + 1].data, zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(zs_derivatives[layer].data, zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
+
+		ApplyActivationDerivativeInPlace(zs_derivatives[layer], ActivationFunctionType::Sigmoid);
 		ApplyActivationInPlace(as[layer + 1], ActivationFunctionType::Sigmoid);
 
 	}
 
 	//Compute the error at the Lth layer
 	GPUAddInPlaceDestination(as.back(), ys, cost_derivative, 1.0f, -1.0f); //a^L - y
-	ApplyActivationDerivative(zs.back(), zs_derivative, ActivationFunctionType::Sigmoid);
 
 	std::vector<DeviceMatrix> deltas;
 	deltas.resize(layers.size() - 1);
 
-	GPUHammardProductToDest(cost_derivative, zs_derivative, deltas.back());
+	GPUHammardProductToDest(cost_derivative, zs_derivatives.back(), deltas.back());
 	
 	//Write bias error and weight errors
 	RowwiseSum(deltas.back(), biasErrors.back());
@@ -523,38 +546,16 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 	//Going backwards	
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
-		cudaDeviceSynchronize();
-		cudaFree(zs_derivative.data);
+		GPUMatMul(layers[layer + 1].weights, deltas[layer], true, false, handle,
+			&weight_error_products[layer]);
 
-		ApplyActivationDerivative(zs[layer], zs_derivative, ActivationFunctionType::Sigmoid);
-		zs_derivative.rows = zs[layer].rows;
-		zs_derivative.columns = zs[layer].columns;
+		//Hammard product being valid between zs_derivatives[layer] and weight_error_products[layer] implies 
+		//dimensions are equal.
+		GPUHammardProduct(zs_derivatives[layer], weight_error_products[layer], deltas[layer]);
 
-		DeviceMatrix weight_error_product;
-		GPUMatMul(layers[layer + 1].weights, delta, true, false, handle,
-			&weight_error_product);
-
-		cudaDeviceSynchronize();
-		cudaFree(delta.data);
-		GPUHammardProduct(zs_derivative, weight_error_product, delta);
-
-		RowwiseSum(delta, biasErrors[layer]);
-		GPUMatMul(delta, as[layer], false, true, handle, &weightErrors[layer]);
+		RowwiseSum(deltas[layer], biasErrors[layer]);
+		GPUMatMul(deltas[layer], as[layer], false, true, handle, &weightErrors[layer]);
 	}
-
-	cudaDeviceSynchronize();
-
-	cudaFree(delta.data);
-
-	for (auto& a : as) {
-		cudaFree(a.data);
-	}
-
-	for (auto& z : zs) {
-		cudaFree(z.data);
-	}
-
-
 }
 
 
