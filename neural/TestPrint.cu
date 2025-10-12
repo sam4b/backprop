@@ -265,7 +265,7 @@ __global__ void AddMatrixInPlace(DeviceMatrix a, DeviceMatrix b, float alpha, fl
 
 	const int idx = row + col * a.rows;
 
-	if (idx >= a.rows * b.rows) return;
+	if (idx >= a.rows * a.columns) return;
 
 	b.data[idx] = (alpha * a.data[idx]) + (beta * b.data[idx]);
 }
@@ -545,7 +545,7 @@ DeviceMatrix GPUFeedForward(const DeviceMatrix& in, const std::vector<DeviceLaye
 }
 
 std::pair<int, int> maxElementWithIndex(float* data, int n) {
-	int max = INT_MIN;
+	float max = -std::numeric_limits<float>::infinity();
 	assert(n > 0);
 
 	int idx = -1;
@@ -701,8 +701,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			assert(biasErrors.size() == weightErrors.size());
 
 			for (int i = 0; i < layers.size(); i++) {
-				GPUScaleMat(biasErrors[i], biasErrors[i], scalar);
-				GPUScaleMat(weightErrors[i], weightErrors[i], scalar);
+				GPUScaleMatInPlace(biasErrors[i], scalar);
+				GPUScaleMatInPlace(weightErrors[i], scalar);
 
 				GPUAddInPlace(biasErrors[i], layers[i].bias, -1.0f, 1.0f); //commutativity of addition is helpful
 				GPUAddInPlace(weightErrors[i], layers[i].weights, -1.0f, 1.0f);
@@ -802,5 +802,5 @@ void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 
 	std::vector<DeviceLayer> network = CreateNetwork(networkLayout, ActivationFunctionType::Sigmoid);
 
-	CUDA_SGD(train, network, 0, 30, 3.0f);
+	CUDA_SGD(train, network, 0, 30, 0.1f);
 }
