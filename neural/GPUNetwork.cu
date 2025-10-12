@@ -1,6 +1,32 @@
-#include "GPUNetworki bat.cuh"
+#include "GPUNetwork.cuh"
 #include "Network.hpp"
 
+#define CUDA_TESTING_ON 1
+
+
+#ifdef CUDA_TESTING_ON
+#define CUDA_WRAPPER(CUDACODE) \
+{ const cudaError_t err = CUDACODE;\
+if (err != cudaSuccess) {\
+	std::cout << "CUDA error: " << cudaGetErrorString(err); \
+	assert(false);\
+}}
+#else
+#define CUDA_WRAPPER(CUDACODE) CUDACODE;
+#endif
+
+
+#ifdef CUDA_TESTING_ON
+#define CUBLAS_WRAPPER(CUBLAS_CODE) \
+{const cublasStatus_t err = CUBLAS_CODE;\
+ if (err != CUBLAS_STATUS_SUCCESS) {\
+std::cout << "cublas error: " << cublasGetStatusString(err);\
+assert(false);\
+}\
+}
+#else
+#define CUBLAS_WRAPPER(CUBLAS_CODE) CUBLAS_CODE;
+#endif
 
 /*
 	A thin wrapper around on-device (GPU) matrices.
@@ -24,8 +50,8 @@ DeviceMatrix copy(const DeviceMatrix& a) {
 	float* newData;
 	const size_t bytes = a.columns * a.rows * sizeof(float);
 
-	cudaMalloc(&newData, bytes);
-	cudaMemcpy(newData, a.data, bytes, cudaMemcpyDeviceToDevice);
+	CUDA_WRAPPER(cudaMalloc(&newData, bytes));
+	CUDA_WRAPPER(cudaMemcpy(newData, a.data, bytes, cudaMemcpyDeviceToDevice));
 
 	DeviceMatrix out;
 	out.data = newData;
@@ -146,11 +172,12 @@ void GPUMatMulPreAllocated(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, bool 
 	float beta = 0.0f;
 
 	//Even if A/B is transposed, give the number of rows for lda,ldb, ldc
-	cublasSgemm_v2(handle, (transposeA) ? CUBLAS_OP_T : CUBLAS_OP_N, (transposeB) ? CUBLAS_OP_T : CUBLAS_OP_N,
+
+	CUBLAS_WRAPPER(cublasSgemm_v2(handle, (transposeA) ? CUBLAS_OP_T : CUBLAS_OP_N, (transposeB) ? CUBLAS_OP_T : CUBLAS_OP_N,
 		m, n, k,
 		&alpha, a.data, a.rows,
 		b.data, b.rows, &beta,
-		c.data, m);
+		c.data, m));
 }
 /*
 	Fills the matrix out with the data A * B (and likewise if A or B are transposed).
@@ -165,7 +192,7 @@ void GPUMatMul(DeviceMatrix a, DeviceMatrix b, bool transposeA, bool transposeB,
 	const int n = transposeB ? b.rows : b.columns;
 
 	float* c;
-	cudaMalloc(&c, sizeof(float) * m * n);
+	CUDA_WRAPPER(cudaMalloc(&c, sizeof(float) * m * n));
 
 
 	out->data = c;
@@ -239,7 +266,7 @@ void GPUHammardProduct(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result) {
 	assert(a.rows == b.rows);
 	assert(a.columns == b.columns);
 
-	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+	CUDA_WRAPPER(cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns));
 	result.rows = a.rows;
 	result.columns = a.columns;
 
@@ -274,7 +301,7 @@ __global__ void AddMatrix(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, float 
 	C MUST NOT ALIAS A OR B.
 */
 void GPUAdd(DeviceMatrix a, DeviceMatrix b, DeviceMatrix& result, float alpha, float beta) {
-	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+	CUDA_WRAPPER(cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns));
 	result.rows = a.rows;
 	result.columns = a.columns;
 
@@ -359,7 +386,7 @@ void GPUScaleMat(DeviceMatrix a, DeviceMatrix& result, float scalar) {
 	result.rows = a.rows;
 	result.columns = a.columns;
 
-	cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns);
+	CUDA_WRAPPER(cudaMalloc(&result.data, sizeof(float) * a.rows * a.columns));
 
 
 	dim3 blockDim(16, 16);
@@ -444,8 +471,10 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 	assert(memory.as[0].rows == xs.rows);
 	assert(memory.as[0].columns == xs.columns);
-	cudaMemcpy(memory.as[0].data, xs.data, sizeof(float) * xs.rows * xs.columns, cudaMemcpyDeviceToDevice);
-	cudaDeviceSynchronize();
+
+	CUDA_WRAPPER(cudaMemcpy(memory.as[0].data, xs.data, sizeof(float) * xs.rows * xs.columns, cudaMemcpyDeviceToDevice));
+	CUDA_WRAPPER(cudaDeviceSynchronize());
+
 	for (int layer = 0; layer < layers.size(); layer++) {
 		DeviceMatrix bias = augmentedBiases[layer];
 
@@ -471,9 +500,10 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 
 		const size_t output_size = memory.zs[layer].columns * memory.zs[layer].rows * sizeof(float);
-		cudaDeviceSynchronize();
-		cudaMemcpy(memory.as[layer + 1].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
-		cudaMemcpy(memory.zs_derivatives[layer].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
+		CUDA_WRAPPER(cudaDeviceSynchronize());
+
+		CUDA_WRAPPER(cudaMemcpy(memory.as[layer + 1].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice));
+		CUDA_WRAPPER(cudaMemcpy(memory.zs_derivatives[layer].data, memory.zs[layer].data, output_size, cudaMemcpyDeviceToDevice));
 
 		ApplyActivationDerivativeInPlace(memory.zs_derivatives[layer], ActivationFunctionType::Sigmoid);
 		ApplyActivationInPlace(memory.as[layer + 1], ActivationFunctionType::Sigmoid);
@@ -545,8 +575,8 @@ std::vector<DeviceLayer> CreateNetwork(const std::vector<size_t>& layout, Activa
 
 		const size_t weightsInBytes = sizeof(float) * neuronsIn * neuronsOut;
 
-		cudaMalloc(&layer.weights.data, weightsInBytes);
-		cudaMemcpy(layer.weights.data, weights, weightsInBytes, cudaMemcpyHostToDevice);
+		CUDA_WRAPPER(cudaMalloc(&layer.weights.data, weightsInBytes));
+		CUDA_WRAPPER(cudaMemcpy(layer.weights.data, weights, weightsInBytes, cudaMemcpyHostToDevice));
 		
 		layer.weights.columns = neuronsIn;
 		layer.weights.rows = neuronsOut;
@@ -555,8 +585,8 @@ std::vector<DeviceLayer> CreateNetwork(const std::vector<size_t>& layout, Activa
 
 		const size_t biasInBytes = sizeof(float) * neuronsOut;
 
-		cudaMalloc(&layer.bias.data, biasInBytes);
-		cudaMemcpy(layer.bias.data, bias, biasInBytes, cudaMemcpyHostToDevice);
+		CUDA_WRAPPER(cudaMalloc(&layer.bias.data, biasInBytes));
+		CUDA_WRAPPER(cudaMemcpy(layer.bias.data, bias, biasInBytes, cudaMemcpyHostToDevice));
 		
 		layer.bias.columns = 1;
 		layer.bias.rows = neuronsOut;
@@ -598,8 +628,8 @@ DeviceMatrix GPUFeedForward(const DeviceMatrix& in, const std::vector<DeviceLaye
 		
 		GPUAddInPlace(layer.bias, out, 1.0f, 1.0f);
 
-		cudaDeviceSynchronize();
-		cudaFree(xs.data);
+		CUDA_WRAPPER(cudaDeviceSynchronize());
+		CUDA_WRAPPER(cudaFree(xs.data));
 		xs = out;
 
 		ApplyActivationInPlace(xs, ActivationFunctionType::Sigmoid);
@@ -624,7 +654,6 @@ std::pair<int, int> maxElementWithIndex(float* data, int n) {
 	return { max, idx };
 }
 
-
 void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingData, std::vector<DeviceLayer>& layers,
 	const int randomState,
 	const int minibatchSize,
@@ -639,7 +668,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 
 	cublasHandle_t handle;
-	cublasCreate_v2(&handle);
+	CUBLAS_WRAPPER(cublasCreate_v2(&handle));
 
 	assert(true);
 
@@ -668,15 +697,16 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		DeviceMatrix bias;
 		bias.rows = layer.neuronsOut;
 		bias.columns = 1;
-		cudaMalloc(&bias.data, bias.rows * bias.columns * sizeof(float));
-		cudaMemset(bias.data, 0, bias.rows * bias.columns * sizeof(float));
+		CUDA_WRAPPER(cudaMalloc(&bias.data, bias.rows * bias.columns * sizeof(float)));
+		CUDA_WRAPPER(cudaMemset(bias.data, 0, bias.rows * bias.columns * sizeof(float)));
+
 		biasErrors.push_back(bias);
 
 		DeviceMatrix weights;
 		weights.rows = layer.neuronsOut;
 		weights.columns = layer.neuronsIn;
-		cudaMalloc(&weights.data, weights.rows * weights.columns * sizeof(float));
-		cudaMemset(weights.data, 0, weights.rows * weights.columns * sizeof(float));
+		CUDA_WRAPPER(cudaMalloc(&weights.data, weights.rows * weights.columns * sizeof(float)));
+		CUDA_WRAPPER(cudaMemset(weights.data, 0, weights.rows * weights.columns * sizeof(float)));
 
 		weightErrors.push_back(weights);
 	}
@@ -695,11 +725,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 		const int bytes = bias.rows * bias.columns * sizeof(float);
 
-		auto err = cudaMalloc(&bias.data, bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&bias.data, bytes));
 		augmentedBiases.push_back(bias);
 	}
 
@@ -709,19 +735,12 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 	DeviceMatrix xs;
 	xs.rows = trainingData[0].first.rows;
 	xs.columns = minibatchSize;
-	auto err = cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns);
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
+	CUDA_WRAPPER(cudaMalloc(&xs.data, sizeof(float) * xs.rows * xs.columns));
+
 	DeviceMatrix ys;
 	ys.rows = trainingData[0].second.rows;
 	ys.columns = minibatchSize;
-	err = cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns);
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
+	CUDA_WRAPPER(cudaMalloc(&ys.data, sizeof(float) * ys.rows * ys.columns));
 
 
 
@@ -731,11 +750,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 	DeviceMatrix cost_derivative;
 	cost_derivative.columns = ys.columns;
 	cost_derivative.rows = ys.rows;
-	err = cudaMalloc(&cost_derivative.data, sizeof(float) * ys.columns * ys.rows);
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
+	CUDA_WRAPPER(cudaMalloc(&cost_derivative.data, sizeof(float) * ys.columns * ys.rows));
 
 	std::vector<DeviceMatrix> zs; //weighted sums
 	std::vector<DeviceMatrix> zs_derivatives;
@@ -751,11 +766,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 	as[0].rows = xs.rows;
 	as[0].columns = xs.columns;
-	err = cudaMalloc(&as[0].data, xs.rows * xs.columns * sizeof(float));
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
+	CUDA_WRAPPER(cudaMalloc(&as[0].data, xs.rows * xs.columns * sizeof(float)));
 
 
 	for (int layer = 0; layer < layers.size(); layer++) {
@@ -769,42 +780,26 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		DeviceMatrix z;
 		z.rows = neuronsOut;
 		z.columns = minibatchSize;
-		err = cudaMalloc(&z.data, activation_size_bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&z.data, activation_size_bytes));
 
 		zs[layer] = z;
 
 		DeviceMatrix zs_derivative = z;
 		zs_derivative.data = nullptr; //just in case..
-		err = cudaMalloc(&zs_derivative.data, activation_size_bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&zs_derivative.data, activation_size_bytes));
 
 		zs_derivatives[layer] = zs_derivative;
 
 		DeviceMatrix weight_error_product = z;
 		weight_error_product.data = nullptr; //just in case..
-		err = cudaMalloc(&weight_error_product.data, activation_size_bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&weight_error_product.data, activation_size_bytes));
 
 		weight_error_products[layer] = weight_error_product;
 
 		DeviceMatrix a;
 		a.rows = neuronsOut;
 		a.columns = minibatchSize;
-		err = cudaMalloc(&a.data, activation_size_bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&a.data, activation_size_bytes));
 
 		as[layer + 1] = a; //layer + 1 to account for putting the initial input into as.
 
@@ -814,11 +809,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		DeviceMatrix delta;
 		delta.rows = z.rows;
 		delta.columns = minibatchSize;
-		err = cudaMalloc(&delta.data, activation_size_bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
+		CUDA_WRAPPER(cudaMalloc(&delta.data, activation_size_bytes));
 
 		deltas[layer] = delta;
 	}
@@ -842,8 +833,8 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 			assert(biasErrors.size() == weightErrors.size());
 			for (int i = 0; i < biasErrors.size(); i++) {
-				cudaMemset(biasErrors[i].data, 0, biasErrors[i].columns * biasErrors[i].rows * sizeof(float));
-				cudaMemset(weightErrors[i].data, 0, weightErrors[i].columns * weightErrors[i].rows * sizeof(float));
+				CUDA_WRAPPER(cudaMemset(biasErrors[i].data, 0, biasErrors[i].columns * biasErrors[i].rows * sizeof(float)));
+				CUDA_WRAPPER(cudaMemset(weightErrors[i].data, 0, weightErrors[i].columns * weightErrors[i].rows * sizeof(float)));
 			}
 
 
@@ -857,7 +848,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 
 					const int offset = j * bias.rows; //move bias rows along each time
 					const int size = bias.rows * sizeof(float); //copy the vector once;
-					cudaMemcpy(bias.data + offset, layers[i].bias.data, size, cudaMemcpyDeviceToDevice);
+					CUDA_WRAPPER(cudaMemcpy(bias.data + offset, layers[i].bias.data, size, cudaMemcpyDeviceToDevice));;
 				}
 			}
 
@@ -865,11 +856,11 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			assert(batchPtr + minibatchSize < trainingData.size() && "Loop never goes out of bounds.");
 			for (int i = 0; i < minibatchSize; i++) {
 				//copy the (batchPtr + i)th input
-				cudaMemcpy(xs.data + (i * xs.rows), trainingData[batchPtr + i].first.data, sizeof(float) * xs.rows * 1,
-					cudaMemcpyDeviceToDevice);
+				CUDA_WRAPPER(cudaMemcpy(xs.data + (i * xs.rows), trainingData[batchPtr + i].first.data, sizeof(float) * xs.rows * 1,
+					cudaMemcpyDeviceToDevice));
 
-				cudaMemcpy(ys.data + (i * ys.rows), trainingData[batchPtr + i].second.data, sizeof(float) * ys.rows * 1,
-					cudaMemcpyDeviceToDevice);
+				CUDA_WRAPPER(cudaMemcpy(ys.data + (i * ys.rows), trainingData[batchPtr + i].second.data, sizeof(float) * ys.rows * 1,
+					cudaMemcpyDeviceToDevice));
 
 			}
 			batchPtr += minibatchSize;
@@ -877,7 +868,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			GPUBackprop(xs, ys, layers, augmentedBiases, memory, handle,
 				biasErrors, weightErrors);
 
-			cudaDeviceSynchronize();
+			CUDA_WRAPPER(cudaDeviceSynchronize());
 
 			//Update with noisy estimate
 
@@ -896,7 +887,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		}
 
 		//Randomly sample sampleSize # of training examples to observe progress each epoch.
-		cudaDeviceSynchronize();
+		CUDA_WRAPPER(cudaDeviceSynchronize());
 		std::shuffle(samples.begin(), samples.end(), mersenne);
 
 		const size_t label_size = trainingData[0].second.rows; //For multi-class classification, we take the argmax of yhat and y 
@@ -911,17 +902,17 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			DeviceMatrix x = GPUFeedForward(in, layers, handle);
 			DeviceMatrix y = trainingData[idx].second;
 
-			cudaDeviceSynchronize();
-			cudaMemcpy(x_device, x.data, label_size * sizeof(float), cudaMemcpyDeviceToHost);
-			cudaMemcpy(y_device, y.data, label_size * sizeof(float), cudaMemcpyDeviceToHost);
+			CUDA_WRAPPER(cudaDeviceSynchronize());
+			CUDA_WRAPPER(cudaMemcpy(x_device, x.data, label_size * sizeof(float), cudaMemcpyDeviceToHost));
+			CUDA_WRAPPER(cudaMemcpy(y_device, y.data, label_size * sizeof(float), cudaMemcpyDeviceToHost));
 
 			const auto [x_max, x_idx] = maxElementWithIndex(x_device, label_size);
 			const auto [y_max, y_idx] = maxElementWithIndex(y_device, label_size);
 
 			if (y_idx == x_idx) count++;
 
-			cudaDeviceSynchronize();
-			cudaFree(x.data);
+			CUDA_WRAPPER(cudaDeviceSynchronize());
+			CUDA_WRAPPER(cudaFree(x.data));
 		}
 
 		float percent_correct = ((float)count) * 100.0f / 250.0f;
@@ -934,33 +925,33 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 	
 	}
 	//Free mini batch data.
-	cudaFree(xs.data);
-	cudaFree(ys.data);
+	CUDA_WRAPPER(cudaFree(xs.data));
+	CUDA_WRAPPER(cudaFree(ys.data));
 
 	for (auto& bias : augmentedBiases) {
-		cudaFree(bias.data);
+		CUDA_WRAPPER(cudaFree(bias.data));
 	}
 
 	for (auto& a : memory.as) {
-		cudaFree(a.data);
+		CUDA_WRAPPER(cudaFree(a.data));
 	}
 
-	cudaFree(memory.cost_derivative.data);
+	CUDA_WRAPPER(cudaFree(memory.cost_derivative.data));
 
 	for (auto& i : memory.weight_error_products) {
-		cudaFree(i.data);
+		CUDA_WRAPPER(cudaFree(i.data));
 	}
 
 	for (auto& i : memory.zs) {
-		cudaFree(i.data);
+		CUDA_WRAPPER(cudaFree(i.data));
 	}
 
 	for (auto& i : memory.zs_derivatives) {
-		cudaFree(i.data);
+		CUDA_WRAPPER(cudaFree(i.data));
 	}
 
 	for (auto& i : memory.deltas) {
-		cudaFree(i.data);
+		CUDA_WRAPPER(cudaFree(i.data));
 	}
 
 }
@@ -970,16 +961,16 @@ std::pair<DeviceMatrix, DeviceMatrix> copyPair(const Eigen::VectorXf& x, const E
 	DeviceMatrix x_device;
 	
 	const size_t x_bytes = x.rows() * x.cols() * sizeof(float);
-	cudaMalloc(&x_device.data, x_bytes);
-	cudaMemcpy(x_device.data, x.data() /*safe as eigen stores column-major, like cuBLAS, by default*/, x_bytes, cudaMemcpyHostToDevice);
+	CUDA_WRAPPER(cudaMalloc(&x_device.data, x_bytes));
+	CUDA_WRAPPER(cudaMemcpy(x_device.data, x.data() /*safe as eigen stores column-major, like cuBLAS, by default*/, x_bytes, cudaMemcpyHostToDevice));
 	x_device.rows = x.rows();
 	x_device.columns = x.cols();
 
 	DeviceMatrix y_device;
 
 	const size_t y_bytes = y.rows() * y.cols() * sizeof(float);
-	cudaMalloc(&y_device.data, y_bytes);
-	cudaMemcpy(y_device.data, y.data(), y_bytes, cudaMemcpyHostToDevice);
+	CUDA_WRAPPER(cudaMalloc(&y_device.data, y_bytes));
+	CUDA_WRAPPER(cudaMemcpy(y_device.data, y.data(), y_bytes, cudaMemcpyHostToDevice));
 	y_device.rows = y.rows();
 	y_device.columns = y.cols();
 
