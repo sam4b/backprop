@@ -400,96 +400,23 @@ void GPUScaleMatInPlace(DeviceMatrix a, float scalar) {
 
 	cublasHandle_t : the handle for cublas 
 */
+
+struct PooledMemory {
+	std::vector<DeviceMatrix>& zs; //weighted sums
+	std::vector<DeviceMatrix>& zs_derivatives;
+	std::vector<DeviceMatrix>& as;
+	std::vector<DeviceMatrix>& weight_error_products;
+	DeviceMatrix cost_derivative;
+};
+
+
 void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	const std::vector<DeviceLayer>& layers,
 	const std::vector<DeviceMatrix>& augmentedBiases,
+	PooledMemory memory,
 	cublasHandle_t& handle,
 	std::vector<DeviceMatrix>& biasErrors,
 	std::vector<DeviceMatrix>& weightErrors) {
-
-
-	/*
-		Pooled
-	*/
-	DeviceMatrix cost_derivative;
-	cost_derivative.columns = ys.columns;
-	cost_derivative.rows = ys.rows;
-	auto err = cudaMalloc(&cost_derivative.data, sizeof(float) * ys.columns * ys.rows);
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
-
-	std::vector<DeviceMatrix> zs; //weighted sums
-	std::vector<DeviceMatrix> zs_derivatives;
-	std::vector<DeviceMatrix> as;	
-	std::vector<DeviceMatrix> weight_error_products;
-
-	as.resize(layers.size() + 1);
-	zs.resize(layers.size());
-	zs_derivatives.resize(layers.size());
-	weight_error_products.resize(layers.size());
-
-	as[0].rows = xs.rows;
-	as[0].columns = xs.columns;
-	auto err = cudaMalloc(&as[0].data, xs.rows * xs.columns * sizeof(float));
-	if (err != cudaSuccess) {
-		std::cout << cudaGetErrorString(err);
-		assert(false);
-	}
-
-
-	for (int layer = 0; layer < layers.size(); layer++) {
-		const int neuronsIn = layers[layer].neuronsIn;
-		const int neuronsOut = layers[layer].neuronsOut;
-
-		//dim (neuronsOutxneuronsIn);
-
-		const size_t bytes = sizeof(float) * neuronsIn * neuronsOut;
-
-		DeviceMatrix z;
-		z.rows = neuronsOut;
-		z.columns = neuronsIn;
-		auto err = cudaMalloc(&z.data, bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
-
-		zs[layer] = z;
-
-		DeviceMatrix zs_derivative = z;
-		zs_derivative.data = nullptr; //just in case..
-		auto err = cudaMalloc(&zs_derivative.data, bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
-
-		zs_derivatives[layer] = zs_derivative;
-
-		DeviceMatrix weight_error_product = z;
-		weight_error_product.data = nullptr; //just in case..
-		auto err = cudaMalloc(&weight_error_product.data, bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
-
-		weight_error_products[layer] = weight_error_product;
-
-		DeviceMatrix a;
-		a.rows = neuronsOut;
-		a.columns = neuronsIn;
-		auto err = cudaMalloc(&a.data, bytes);
-		if (err != cudaSuccess) {
-			std::cout << cudaGetErrorString(err);
-			assert(false);
-		}
-
-		as[layer + 1] = a; //layer + 1 to account for putting the initial input into as.
-	}
-
 
 	int biasIdx = 0; 
 	
@@ -513,7 +440,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 		//write into zs[2]
 		//write into as[3]
 
-		GPUMatMulPreAllocated(layers[layer].weights, as[layer], zs[layer], false, false,
+		GPUMatMulPreAllocated(layers[layer].weights, memory.as[layer], memory.zs[layer], false, false,
 			handle);
 
 		GPUAddInPlace(bias, zs[layer], 1.0f, 1.0f);
@@ -524,7 +451,7 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 
 		const size_t output_size = zs[layer].columns * zs[layer].rows * sizeof(float);
 		cudaMemcpy(as[layer + 1].data, zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
-		cudaMemcpy(zs_derivatives[layer].data, zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(memory.zs_derivatives[layer].data, zs[layer].data, output_size, cudaMemcpyDeviceToDevice);
 
 		ApplyActivationDerivativeInPlace(zs_derivatives[layer], ActivationFunctionType::Sigmoid);
 		ApplyActivationInPlace(as[layer + 1], ActivationFunctionType::Sigmoid);
@@ -532,12 +459,12 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	}
 
 	//Compute the error at the Lth layer
-	GPUAddInPlaceDestination(as.back(), ys, cost_derivative, 1.0f, -1.0f); //a^L - y
+	GPUAddInPlaceDestination(memory.as.back(), ys, memory.cost_derivative, 1.0f, -1.0f); //a^L - y
 
 	std::vector<DeviceMatrix> deltas;
 	deltas.resize(layers.size() - 1);
 
-	GPUHammardProductToDest(cost_derivative, zs_derivatives.back(), deltas.back());
+	GPUHammardProductToDest(memory.cost_derivative, memory.zs_derivatives.back(), deltas.back());
 	
 	//Write bias error and weight errors
 	RowwiseSum(deltas.back(), biasErrors.back());
@@ -547,11 +474,11 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	//Going backwards	
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
 		GPUMatMul(layers[layer + 1].weights, deltas[layer], true, false, handle,
-			&weight_error_products[layer]);
+			&memory.weight_error_products[layer]);
 
 		//Hammard product being valid between zs_derivatives[layer] and weight_error_products[layer] implies 
 		//dimensions are equal.
-		GPUHammardProduct(zs_derivatives[layer], weight_error_products[layer], deltas[layer]);
+		GPUHammardProduct(zs_derivatives[layer], memory.weight_error_products[layer], deltas[layer]);
 
 		RowwiseSum(deltas[layer], biasErrors[layer]);
 		GPUMatMul(deltas[layer], as[layer], false, true, handle, &weightErrors[layer]);
@@ -777,6 +704,100 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		assert(false);
 	}
 
+
+
+	/*
+		A bunch of horrible stuff to pool memory
+	*/
+	DeviceMatrix cost_derivative;
+	cost_derivative.columns = ys.columns;
+	cost_derivative.rows = ys.rows;
+	auto err = cudaMalloc(&cost_derivative.data, sizeof(float) * ys.columns * ys.rows);
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
+	}
+
+	std::vector<DeviceMatrix> zs; //weighted sums
+	std::vector<DeviceMatrix> zs_derivatives;
+	std::vector<DeviceMatrix> as;
+	std::vector<DeviceMatrix> weight_error_products;
+
+	as.resize(layers.size() + 1);
+	zs.resize(layers.size());
+	zs_derivatives.resize(layers.size());
+	weight_error_products.resize(layers.size());
+
+	as[0].rows = xs.rows;
+	as[0].columns = xs.columns;
+	auto err = cudaMalloc(&as[0].data, xs.rows * xs.columns * sizeof(float));
+	if (err != cudaSuccess) {
+		std::cout << cudaGetErrorString(err);
+		assert(false);
+	}
+
+
+	for (int layer = 0; layer < layers.size(); layer++) {
+		const int neuronsIn = layers[layer].neuronsIn;
+		const int neuronsOut = layers[layer].neuronsOut;
+
+		//dim (neuronsOutxneuronsIn);
+
+		const size_t bytes = sizeof(float) * neuronsIn * neuronsOut;
+
+		DeviceMatrix z;
+		z.rows = neuronsOut;
+		z.columns = neuronsIn;
+		auto err = cudaMalloc(&z.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		zs[layer] = z;
+
+		DeviceMatrix zs_derivative = z;
+		zs_derivative.data = nullptr; //just in case..
+		auto err = cudaMalloc(&zs_derivative.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		zs_derivatives[layer] = zs_derivative;
+
+		DeviceMatrix weight_error_product = z;
+		weight_error_product.data = nullptr; //just in case..
+		auto err = cudaMalloc(&weight_error_product.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		weight_error_products[layer] = weight_error_product;
+
+		DeviceMatrix a;
+		a.rows = neuronsOut;
+		a.columns = neuronsIn;
+		auto err = cudaMalloc(&a.data, bytes);
+		if (err != cudaSuccess) {
+			std::cout << cudaGetErrorString(err);
+			assert(false);
+		}
+
+		as[layer + 1] = a; //layer + 1 to account for putting the initial input into as.
+	}
+
+	PooledMemory memory{
+		.zs = zs,
+		.zs_derivatives = zs_derivatives,
+		.as = as,
+		.weight_error_products = weight_error_products,
+		.cost_derivative = cost_derivative,
+	};
+
+
+
 	for (int epoch = 0; epoch < no_epochs; epoch++) {
 		int batchPtr = 0;
 
@@ -817,7 +838,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			}
 			batchPtr += minibatchSize;
 
-			GPUBackprop(xs, ys, layers, augmentedBiases, handle,
+			GPUBackprop(xs, ys, layers, augmentedBiases, memory, handle,
 				biasErrors, weightErrors);
 
 			cudaDeviceSynchronize();
@@ -882,6 +903,25 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		for (auto& bias : augmentedBiases) {
 			cudaFree(bias.data);
 		}
+
+		for (auto& a : memory.as) {
+			cudaFree(a.data);
+		}
+
+		cudaFree(memory.cost_derivative.data);
+
+		for (auto& i : memory.weight_error_products) {
+			cudaFree(i.data);
+		}
+
+		for (auto& i : memory.zs) {
+			cudaFree(i.data);
+		}
+
+		for (auto& i : memory.zs_derivatives) {
+			cudaFree(i.data);
+		}
+
 	}
 }
 
