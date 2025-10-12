@@ -137,6 +137,9 @@ void GPUMatMulPreAllocated(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c, bool 
 	const int k = transposeA ? a.rows : a.columns;
 	const int n = transposeB ? b.rows : b.columns;
 
+	assert(c.rows == m);
+	assert(c.columns == n);
+
 	//(mxk)(kxn) = (mxn)
 
 	float alpha = 1.0f;
@@ -419,7 +422,7 @@ struct PooledMemory {
 	std::vector<DeviceMatrix>& zs_derivatives;
 	std::vector<DeviceMatrix>& as;
 	std::vector<DeviceMatrix>& weight_error_products;
-	std::vector<DeviceMatrix> deltas;
+	std::vector<DeviceMatrix>& deltas;
 	DeviceMatrix cost_derivative;
 };
 
@@ -427,7 +430,7 @@ struct PooledMemory {
 void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	const std::vector<DeviceLayer>& layers,
 	const std::vector<DeviceMatrix>& augmentedBiases,
-	PooledMemory memory,
+	PooledMemory& memory,
 	cublasHandle_t& handle,
 	std::vector<DeviceMatrix>& biasErrors,
 	std::vector<DeviceMatrix>& weightErrors) {
@@ -479,20 +482,20 @@ void GPUBackprop(DeviceMatrix xs, DeviceMatrix ys,
 	
 	//Write bias error and weight errors
 	RowwiseSum(memory.deltas.back(), biasErrors.back());
-	GPUMatMul(memory.deltas.back(), memory.as[memory.as.size() - 2], false, true, handle,
-		&weightErrors.back());
+
+	GPUMatMulPreAllocated(memory.deltas.back(), memory.as[memory.as.size() - 2], weightErrors.back(), false, true, handle);
 
 	//Going backwards	
 	for (int layer = layers.size() - 2; layer >= 0; layer--) {
-		GPUMatMul(layers[layer + 1].weights, memory.deltas[layer + 1], true, false, handle,
-			&memory.weight_error_products[layer]);
+		GPUMatMulPreAllocated(layers[layer + 1].weights, memory.deltas[layer + 1], memory.weight_error_products[layer],
+			true, false, handle);
 
 		//Hammard product being valid between zs_derivatives[layer] and weight_error_products[layer] implies 
 		//dimensions are equal.
-		GPUHammardProduct(memory.zs_derivatives[layer], memory.weight_error_products[layer], memory.deltas[layer]);
+		GPUHammardProductToDest(memory.zs_derivatives[layer], memory.weight_error_products[layer], memory.deltas[layer]);
 
 		RowwiseSum(memory.deltas[layer], biasErrors[layer]);
-		GPUMatMul(memory.deltas[layer], memory.as[layer], false, true, handle, &weightErrors[layer]);
+		GPUMatMulPreAllocated(memory.deltas[layer], memory.as[layer], weightErrors[layer], false, true, handle);
 	}
 }
 
@@ -887,7 +890,7 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 			}
 		}
 
-
+		continue;
 		//Randomly sample sampleSize # of training examples to observe progress each epoch.
 		cudaDeviceSynchronize();
 		std::shuffle(samples.begin(), samples.end(), mersenne);
@@ -924,38 +927,40 @@ void CUDA_SGD(const std::vector<std::pair<DeviceMatrix, DeviceMatrix>> trainingD
 		delete[] x_device;
 		delete[] y_device;
 
-		//Free mini batch data.
-		cudaFree(xs.data);
-		cudaFree(ys.data);
-
-		for (auto& bias : augmentedBiases) {
-			cudaFree(bias.data);
-		}
-
-		for (auto& a : memory.as) {
-			cudaFree(a.data);
-		}
-
-		cudaFree(memory.cost_derivative.data);
-
-		for (auto& i : memory.weight_error_products) {
-			cudaFree(i.data);
-		}
-
-		for (auto& i : memory.zs) {
-			cudaFree(i.data);
-		}
-
-		for (auto& i : memory.zs_derivatives) {
-			cudaFree(i.data);
-		}
-
-		for (auto& i : memory.deltas) {
-			cudaFree(i.data);
-		}
-
+	
 	}
+	//Free mini batch data.
+	cudaFree(xs.data);
+	cudaFree(ys.data);
+
+	for (auto& bias : augmentedBiases) {
+		cudaFree(bias.data);
+	}
+
+	for (auto& a : memory.as) {
+		cudaFree(a.data);
+	}
+
+	cudaFree(memory.cost_derivative.data);
+
+	for (auto& i : memory.weight_error_products) {
+		cudaFree(i.data);
+	}
+
+	for (auto& i : memory.zs) {
+		cudaFree(i.data);
+	}
+
+	for (auto& i : memory.zs_derivatives) {
+		cudaFree(i.data);
+	}
+
+	for (auto& i : memory.deltas) {
+		cudaFree(i.data);
+	}
+
 }
+
 
 std::pair<DeviceMatrix, DeviceMatrix> copyPair(const Eigen::VectorXf& x, const Eigen::VectorXf& y) {
 	DeviceMatrix x_device;
