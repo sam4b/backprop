@@ -6,4 +6,4 @@ cmake_minimum_required(VERSION 3.18)
 project(backprop)
 
 add_subdirectory(src)
-add_subdirectory(python)
+add_subdirectory(examples)

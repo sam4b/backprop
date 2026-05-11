@@ -3,7 +3,7 @@
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-add_library(backprop "Backpropagation.cpp" "GPUNetwork.cu" "Layer.hpp"
+add_library(backend "backprop.hpp" "Backpropagation.cpp" "GPUNetwork.cu" "Layer.hpp"
 "Network.hpp")
 
 
@@ -21,6 +21,6 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(eigen)
 
-target_link_libraries(backprop
+target_link_libraries(backend
   PUBLIC
   rapidcsv nlohmann_json::nlohmann_json Eigen3::Eigen)
