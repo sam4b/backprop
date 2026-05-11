@@ -29,6 +29,7 @@ inline const std::unordered_map<ActivationFunctionType, std::function<float(floa
 
 };
 
+//Backpropagation with cross-entropy (loss, need to make it configurable).
 //copy xs as we need to reuse a matrix of its size anyway!
 inline void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys, const std::vector<Layer>& layers, std::vector<Eigen::VectorXf>& biasErrors, std::vector<Eigen::MatrixXf>& weightErrors,
 	const std::vector<Eigen::MatrixXf>& biasMatricesPerLayer) {
@@ -57,7 +58,7 @@ inline void matrix_based_backprop(Eigen::MatrixXf xs, const Eigen::MatrixXf& ys,
 	const Eigen::MatrixXf cost_derivative = (xs - ys);
 	//const Eigen::MatrixXf zs_derivative = zs.back().unaryExpr(derivativeMap.at(layers.back().type));
 
-	Eigen::MatrixXf delta = cost_derivative;//.cwiseProduct(zs_derivative);
+	Eigen::MatrixXf delta = cost_derivative;
 
 	biasErrors.back() = delta.rowwise().sum(); //Reduce from matrix of errors down to a vector of errors for the bias for this layer
 	weightErrors.back() = delta * as[as.size() - 2].transpose();

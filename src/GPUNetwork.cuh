@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <cublas_v2.h>
+#define EIGEN_NO_CUDA //fix build error on newer eigen
 #include <Eigen/Dense>
 #include <iostream>
 

@@ -3,8 +3,8 @@
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-add_library(backend "backprop.hpp" "Backpropagation.cpp" "GPUNetwork.cu" "Layer.hpp"
-"Network.hpp")
+add_library(backend "backprop.hpp"  "GPUNetwork.cu" "Layer.hpp"
+"Network.hpp" "Utilities.hpp")
 
 
 FetchContent_Declare(
@@ -21,6 +21,17 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(eigen)
 
+
+FetchContent_Declare(
+    rapidcsv
+    URL "https://github.com/d99kris/rapidcsv/archive/v8.90.zip"
+)
+FetchContent_MakeAvailable(rapidcsv)
+
+
+find_package(CUDAToolkit REQUIRED)
+target_include_directories(backend PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
+
 target_link_libraries(backend
   PUBLIC
-  rapidcsv nlohmann_json::nlohmann_json Eigen3::Eigen)
+  nlohmann_json::nlohmann_json Eigen3::Eigen CUDA::cudart rapidcsv)

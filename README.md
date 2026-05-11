@@ -10,7 +10,8 @@ Install CUDA (even if you have no NVIDIA GPU, the code must be compiled)
 Use CMake to build (Visual Studio has been used to test this, but the terminal should work too)
 
 ## Future:
-I might add a pybind11 binding to Python to allow the use of Jupyter notebooks.
+A pybind11 binding to Python to allow the use of Jupyter notebooks.
+Convolutional neural network support.
 
 ## Acknowledgements:
-The libraries Eigen, nlohmann-json, cuBLAS and CUDA were used in this project. 
+The libraries Eigen, nlohmann-json, cuBLAS, CUDA and rapidCSV were used in this project. 
