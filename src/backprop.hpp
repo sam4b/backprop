@@ -4,3 +4,4 @@
 #include "Network.hpp"
 #include "Layer.hpp"
 #include "Utilities.hpp"
+#include "GPUNetwork.cuh"

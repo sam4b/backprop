@@ -1,4 +1,5 @@
 #include "../src/backprop.hpp"
+#include "data.hpp"
 /*
 	Learning image data: the MNIST dataset
 */
@@ -13,7 +14,6 @@ inline uint32_t readBigEndianUint32(std::ifstream& f) {
 	return result;
 }
 
-//MNIST reader
 inline std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>> readMNIST(const std::filesystem::path& imagesPath, const std::filesystem::path& labelsPath) {
 	std::ifstream labels(labelsPath, std::ios::binary);
 	assert(labels);
@@ -95,6 +95,48 @@ inline void print(const std::pair<Eigen::VectorXf, Eigen::VectorXf>& pair) {
 	}
 }
 
-int main() {
+std::tuple<LabelledSet, LabelledSet> loadMNIST(const int seed) {
+	auto train = readMNIST(getDataPath() + "train-images.idx3-ubyte", getDataPath() + "train-labels.idx1-ubyte");
 
+	auto test = readMNIST(getDataPath() + "t10k-images.idx3-ubyte", getDataPath() + "t10k-labels.idx1-ubyte");
+
+	return { train, test };
+}
+
+
+int main() {
+	const auto seed = 6;
+
+	auto [train, test] = loadMNIST(seed);
+
+	for (int i = 0; i < 5; i++) {
+		const auto& example = train[i];
+
+		print(example);
+	}
+
+	const auto network = GPUTrain(train, { 28 * 28, 30, 10 });
+
+
+	std::cout << "\nTrained\n";
+
+	Eigen::MatrixXf mat(test[0].first.rows(), test.size());
+	for (int i = 0; i < test.size(); i++) {
+		mat.col(i) = test[i].first;
+	}
+	
+
+	const auto res = predict(network, mat);
+	int correct = 0;
+	for (int i = 0; i < test.size(); i++) {
+		Eigen::Index predLabel, trueLabel;
+		res.col(i).maxCoeff(&predLabel);
+		test[i].second.maxCoeff(&trueLabel);
+		if (predLabel == trueLabel) correct++;
+	}
+
+	const float accuracy = (float)correct / test.size();
+	std::cout << "Accuracy: " << accuracy * 100.0f << "%" << std::endl;
+
+	std::cin.get();
 }

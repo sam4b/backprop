@@ -34,4 +34,4 @@ target_include_directories(backend PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
 
 target_link_libraries(backend
   PUBLIC
-  nlohmann_json::nlohmann_json Eigen3::Eigen CUDA::cudart rapidcsv)
+  nlohmann_json::nlohmann_json Eigen3::Eigen CUDA::cudart CUDA::cublas rapidcsv)

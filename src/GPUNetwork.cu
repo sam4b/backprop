@@ -28,24 +28,6 @@ assert(false);\
 #define CUBLAS_WRAPPER(CUBLAS_CODE) CUBLAS_CODE;
 #endif
 
-/*
-	A thin wrapper around on-device (GPU) matrices.
-*/
-struct DeviceMatrix {
-	float* data;
-	int columns;
-	int rows;
-};
-
-//plan: recreate layer as a wrapper around this that allows for usage with both eigen (pcu side) nad cuda
-struct DeviceLayer {
-	DeviceMatrix weights;
-	DeviceMatrix bias;
-	int neuronsIn;
-	int neuronsOut;
-};
-
-
 DeviceMatrix copy(const DeviceMatrix& a) {
 	float* newData;
 	const size_t bytes = a.columns * a.rows * sizeof(float);
@@ -995,7 +977,7 @@ void CopyData(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 /*
 	Creates a neural network on the GPU (sigmoid activation function) and trains it on the data provided.
 */
-void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& data, 
+std::vector<DeviceLayer> GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& data, 
 	const std::vector<size_t>& networkLayout
 	) {
 
@@ -1008,4 +990,33 @@ void GPUTrain(const std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>& da
 	std::vector<DeviceLayer> network = CreateNetwork(networkLayout, ActivationFunctionType::Sigmoid);
 
 	CUDA_SGD(train, network, 0, 30, 0.1f);
+
+	return network;
+}
+
+Eigen::MatrixXf predict(const std::vector<DeviceLayer>& network, Eigen::MatrixXf x) {
+
+	DeviceMatrix x_device;
+
+	const size_t x_bytes = x.rows() * x.cols() * sizeof(float);
+	CUDA_WRAPPER(cudaMalloc(&x_device.data, x_bytes));
+	CUDA_WRAPPER(cudaMemcpy(x_device.data, x.data() /*safe as eigen stores column-major, like cuBLAS, by default*/, x_bytes, cudaMemcpyHostToDevice));
+	x_device.rows = x.rows();
+	x_device.columns = x.cols();
+
+	cublasHandle_t handle;
+	CUBLAS_WRAPPER(cublasCreate_v2(&handle));
+
+	auto res = GPUFeedForward(x_device, network, handle);
+
+	std::vector<float> buf(res.rows * res.columns);
+
+	cudaMemcpy(buf.data(), res.data, buf.size() * sizeof(float), cudaMemcpyDeviceToHost);
+
+	Eigen::Map<Eigen::MatrixXf> mat(buf.data(), res.rows, res.columns);
+
+	CUDA_WRAPPER(cudaFree(x_device.data));
+
+	return mat;
+
 }
