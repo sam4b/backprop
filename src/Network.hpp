@@ -9,6 +9,28 @@
 #include <format>
 #include "Backpropagation.hpp"
 
+using LabelledSet = std::vector<std::pair<Eigen::VectorXf, Eigen::VectorXf>>;
+
+/*Slight regression for now, moving to a singular activation function for the whole of the network*/
+
+struct Hyperparameters {
+	std::vector<int> hiddenLayers;
+	float learningRate;
+	ActivationFunctionType activationFunction;
+	//TBA: cost function
+	//TBA: Optimizer (ADAM implementation)
+	int epochs;
+	int batchSize;
+};
+
+struct HyperparametersSearchSpace {
+	std::vector<std::vector<int>> hiddenLayers;
+	std::vector<float> learningRates;
+	std::vector<ActivationFunctionType> activationFunctions;
+	std::vector<int> epochs;
+	std::vector<int> batchSize;
+};
+
 
 
 class Network {
@@ -184,3 +206,63 @@ private:
 	int m_epochCount;
 	std::vector<Layer> m_layers;
 };
+
+//Grid search for best combination of hyperparameters to maximise score on validation set
+//Evaluator should be a function that returns true if the prediction (the first parameter, yhat) is correct (determined by the label, y, the second parameter).
+
+inline Hyperparameters gridSearch(const HyperparametersSearchSpace& searchSpace, const LabelledSet& trainingSet, const LabelledSet& validationSet, int randomState,
+	const std::function<bool(const Eigen::VectorXf&, const Eigen::VectorXf&)> evaluator) {
+	//Precondition: all vectors have at least one element
+
+	Hyperparameters best = {
+		.hiddenLayers = searchSpace.hiddenLayers[0],
+		.learningRate = searchSpace.learningRates[0],
+		.activationFunction = searchSpace.activationFunctions[0],
+		.epochs = searchSpace.epochs[0],
+		.batchSize = searchSpace.batchSize[0]
+	};
+	int bestScore = 0;
+
+	//TODO: Parallelise
+
+	for (const auto& hiddenLayerLayout : searchSpace.hiddenLayers) {
+		for (const auto learningRate : searchSpace.learningRates) {
+			for (const auto activationFunctions : searchSpace.activationFunctions) {
+				for (const auto epochs : searchSpace.epochs) {
+					for (const auto batchSize : searchSpace.batchSize) {
+						const Hyperparameters tryParams = {
+							.hiddenLayers = hiddenLayerLayout,
+							.learningRate = learningRate,
+							.activationFunction = activationFunctions,
+							.epochs = epochs,
+							.batchSize = batchSize
+						};
+
+						Network network;
+						network.train(trainingSet, tryParams);
+
+						int correct = 0;
+						for (const auto& [x, y] : validationSet) {
+							const auto yhat = network.predict(x);
+							if (evaluator(yhat, y)) {
+								correct++;
+							}
+						}
+						//ValidationSet size remains constant, so just compare 
+						if (correct >= bestScore) {
+							best = tryParams;
+						}
+						bestScore = correct;
+					}
+				}
+			}
+		}
+	}
+	return best;
+}
+
+inline Hyperparameters gridSearch(const HyperparametersSearchSpace& searchSpace, const LabelledSet& trainingSet, const LabelledSet& validationSet,
+	const std::function<bool(const Eigen::VectorXf&, const Eigen::VectorXf&)> evaluator) {
+	std::random_device rng;
+	return gridSearch(searchSpace, trainingSet, validationSet, rng(), evaluator);
+}
