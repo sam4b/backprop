@@ -3,7 +3,7 @@
 A small C++ library for training deep neural networks, with both a CPU-side training backend (the Eigen linear algebra library)
 and a GPU-accelerated training backend (via CUDA, so NVIDIA GPUs only).
 
-Examples can be found in ```examples/``` (MNIST, parkinsons tabular data, load/save model)
+Examples can be found in ```examples/``` (MNIST, parkinsons tabular data).
 
 ## Build instructions:
 Install CUDA (even if you have no NVIDIA GPU, the code must be compiled)
